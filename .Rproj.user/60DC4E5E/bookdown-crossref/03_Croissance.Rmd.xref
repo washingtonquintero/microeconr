@@ -1,0 +1,28 @@
+h1:multiple-regression-model Multiple Regression Model
+h2:the-model-and-the-data-set The model and the data set
+h3:modélisation Modélisation
+h3:données Données
+fig:invpop Investment rate and demographic growth
+h2:computation-of-the-ols-estimator Computation of the OLS estimator
+h2:geometry-of-least-squares-and-matrix-algebra Geometry of least squares and matrix algebra
+h3:vectors-variance-and-covariance Vectors, variance and covariance
+fig:mafig Vector algebra
+h3:the-geometry-of-least-squares The geometry of least squares
+fig:smplregmodel Geometry of the simple regression model
+fig:multregmodel Geometry of the multiple regression model
+h3:the-frish-waugh-theorem The Frish-Waugh theorem
+fig:frishwaugh The Frish-Waugh theorem
+h3:the-three-test-principles The three test principles
+h2:properties-of-the-estimators Properties of the estimators
+h3:the-unbiasness-of-the-ols-estimator The unbiasness of the OLS estimator
+h3:the-variance-of-the-ols-estimator The variance of the OLS estimator
+h3:asymptotic-properties-of-the-ols-estimator Asymptotic properties of the OLS estimator
+h2:confidence-interval-and-test Confidence interval and test
+h3:simple-confidence-interval-and-test Simple confidence interval and test
+h3:joint-confidence-interval-and-test Joint confidence interval and test
+fig:ellipse Ellipse of confidence for the two coefficients
+h2:ré-estimation-du-modèle Ré-estimation du modèle
+h3:modification-de-léchantillon Modification de l’échantillon
+h3:modification-du-modèle Modification du modèle
+h3:general-formula-for-the-computation-of-the-f-statistic General formula for the computation of the  statistic
+

@@ -1,0 +1,27 @@
+--- 
+title: "Micro-Econometrics with R"
+author: "Yves Croissant"
+date: "`r Sys.Date()`"
+site: bookdown::bookdown_site
+biblio-style: apalike
+documentclass: krantz
+link-citations: yes
+github-repo: rstudio/bookdown-demo
+description: "Micro-Econometrics"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = FALSE, fig.pos = "hbtp",
+                      message = FALSE, warning = FALSE,
+                      fig.asp = 0.8,
+                      fig.width = 8,
+                      out.width = '70%', fig.align = "center",
+                      fig.env = "figure")
+library("tidyverse")
+```
+
+# Introduction
+
+This book is about micro econometrics, no time series stuff. 
+
+

@@ -1,0 +1,741 @@
+# Interpretation of the Coefficients
+
+On considère un jeu de données concernant le prix du vin aux
+Etats-Unis :
+
+```{r }
+library("tidyverse")
+prtcoef <- function(x, id, digits = 3) unname(round(coef(x)[id], digits))
+load("./data/Wine.rda")
+Wine <- as_tibble(Wine)
+Wine
+```
+
+Le tableau contient 9600 type de vins pour lequel on observe en
+particulier :
+
+- le prix `price`, en $ de 2000 par bouteille,
+- la production `case`, mesurée en nombre de caisse, une caisse
+  contenant 12 bouteilles de 75 cl,
+- la région `region`, la grande région viticole d'où le vin est issu,
+- `vineyard` est une variable qui indique si le vin est un vin
+  d'appellation.
+
+## Variable explicative numérique
+
+
+La variable à expliquer est le prix par bouteille. Dans un premier
+temps, nous considèrerons comme unique variable explicative la
+production. Il y a normalement une relation décroissante entre la
+production et le prix, puisque les vins de haute qualité sont en
+général produits sur de petits terroirs, avec des rendements
+faibles. Nous considérerons deux mesures de la production et du prix :
+
+- la production est mesurée en caisse ($y$) et en $m^3$ ($q$). Une
+caisse contenant 12 bouteilles de 75cl, elle contient un volume de 7
+litres et il faut donc multiplier la production par 7 / 1000 pour
+obtenir la production en $m^3$ : $q = 0.007 y$
+- le prix est mesuré en $ de 2000 par bouteille. L'indice de prix
+  américain était de 172 en 2000, il est de 258 en 2020. Par
+  conséquent on passe du prix en $ de 2000 ($x$) au prix en $ de 2020
+  ($w$) en multipliant par $258/172 = 1.5$.
+
+On créé ces 4 variables :
+
+```{r }
+Wine2 <- Wine %>% transmute(x = cases, w = cases * 0.007, y = price, q = price * 1.5)
+Wine2
+```
+
+### Variables explicative et expliquée en niveau
+
+On commence par un ensemble de régressions linéaires simples entre $y$
+/ $q$ et $x$ / $w$ :
+
+```{r }
+nn_yx <- lm(y ~ x, Wine2)
+nn_yw <- lm(y ~ w, Wine2)
+nn_qx <- lm(q ~ x, Wine2)
+nn_qw <- lm(q ~ w, Wine2)
+coef(nn_yx)
+```
+Le modèle s'écrit :
+
+$$
+y_n = \beta_o + \beta_x x_n + \epsilon_n
+$$
+
+$y$ est mesuré en $2000, et par conséquent $\beta_0$, $\beta_x x_n$ et
+$\epsilon_n$ aussi. 
+
+la constante est ici difficilement interprétable, car elle estime la
+valeur moyenne d'une bouteille de vin lorsque la production ($x$) est
+nulle, ce qui n'a bien sûr pas de sens. On peut malgré tout dire qu'il
+s'agit de la valeur moyenne d'une bouteille d'un vin très rare. On
+obtient ici `r prtcoef(nn_yx, 1, 1)` $2000 pour une
+bouteille de vin rare. $\beta_x x$ étant mesuré en $2000 et $x$ en nombre
+de caisses, $\beta_x$ est mesuré en $2000 par caisse. On obtient ici
+que lorsque la production augmente d'une caisse, le prix de la
+bouteille baisse de `r prtcoef(nn_yx, 2, 2)` $2000, soit
+0.03 cent par caisse. Les résidus et les valeurs prédites sont
+également mesurées en $2000 :
+
+```{r }
+head(cbind(y = Wine2$y, heps = resid(nn_yx), hy = fitted(nn_yx)), 3)
+```
+Par exemple, pour le premier vin de l'échantillon, le prix observé est
+de `r round(Wine2$y[1], 2)` : il se décompose entre la prédiction du
+modèle (c'est-à-dire l'estimation de la valeur moyenne d'une bouteille
+correspondant à ce niveau de production) égale à  `r round(fitted(nn_yx), 2)[1]`
+et à un résidu `r round(resid(nn_yx), 2)[1]`, qui indique que le prix de
+cette bouteille est inférieur de `r round(resid(nn_yx), 2)[1]` $2000
+à la moyenne des vins caractérisés par ce niveau de production.
+
+Mesurons désormais le prix du vin en $2020. Cela signifie que l'on
+change l'unité de la variable expliquée, donc celle de $\beta_x x_n$
+et de $\epsilon_n$. $\beta_x x_n$ étant désormais mesuré en $2020,
+$\beta_x$ est mesuré en $2020 par caisse. La constante, qui représente
+toujours le prix moyen d'un vin très rare est également mesurée en
+$2020, ainsi que les valeurs prédites et les résidus. Par conséquent,
+toutes les estimations sont multipliées par 1.5.
+
+```{r collapse = TRUE}
+coef(nn_qx)
+coef(nn_qx) / coef(nn_yx)
+head(resid(nn_qx), 2)
+head(resid(nn_qx), 2) / head(resid(nn_yx), 2)
+```
+Par exemple, le prix de la première bouteille est inférieur de 
+`r round(resid(nn_qx)[1], 2)` $2020, soit 1.5 fois 
+`r round(resid(nn_yx)[1], 2)` 
+à la moyenne des vins caractérisés par ce niveau de production.
+
+Mesurons désormais la production en $m^3$. Le modèle initial peut donc
+se réécrire :
+
+$$
+y_n = \beta_0 + \beta_x (w_n / 0.007) + \epsilon_n = \beta_0 + (\beta_x / 0.007) w_n + \epsilon_n =
+\beta_0 + \beta_w w_n + \epsilon_n
+$$
+
+Les trois éléments du modèle restent mesurés en $2000 et c'est le cas en
+particulier pour $\beta_w w_n$. Comme la production est multipliée par
+0.007, le coefficient associé est divisé par le même montant. En
+revanche, la constante, les valeurs prédites et les résidus ne change
+pas d'unité de mesure ($2000) et donc de valeur.
+
+```{r }
+nn_yw <- lm(y ~ w, Wine2)
+coef(nn_yw)
+coef(nn_yx) / coef(nn_yw)
+```
+Le prix moyen d'une bouteille de vin très rare reste égal à 
+`r prtcoef(nn_yw, 1, 1)` $2000, le coefficient associé indique
+désormais que lorsque la production augmente d'$1m^3$, le prix de la
+bouteille augmente de `r prtcoef(nn_yw, 2, 3)`, soit environ 5
+cents par bouteille.
+
+### Variable explicative en logarithme
+
+Nous estimons désormais le modèle avec $x$ en logarithmes :
+
+$$
+y_n = \beta_0 + \beta_x \ln x_n + \epsilon_n
+$$
+
+La variable expliquée est toujours mesurée en $2000, donc $\beta_0$,
+$\beta_x \ln x_n$, $\epsilon_n$, $\hat{y}_n$ et $\hat{\epsilon}_n$
+aussi.
+
+```{r }
+nl_yx <- lm(y ~ log(x), Wine2)
+coef(nl_yx)
+```
+La constante mesure toujours la valeur moyenne d'une bouteille d'un
+vin très rare, elle est beaucoup plus élevée que dans la spécification
+précédente (`r prtcoef(nl_yx, 1, 2)` contre `r prtcoef(nn_yx, 1, 2)`)
+
+Le coefficient associé à $x$ est désormais la dérivé de $y$ par
+rapport à $\ln x$, soit $\beta_x = \frac{dy}{d\ln x}= \frac{dy}{dx /
+x}$. Ce coefficient mesure donc le rapport entre une variation absolue
+de $y$ et une variation relative de $x$. On a ici, lorsque $dx/x=1$
+$dy = `r prtcoef(nl_yx, 2, 2)`$, ce qui signifie que lorsque la
+production double, le prix moyen de la bouteille baisse de 
+`r prtcoef(nl_yx, 2, 2)` $2000. 
+
+
+```{r }
+head(cbind(y = Wine2$y, heps = resid(nl_yx), hy = fitted(nl_yx)), 3)
+```
+Avec cette nouvelle spécification, pour la première bouteille, le prix
+est inférieur de `r round(resid(nl_yx)[1], 2)` à la valeur moyenne
+prédite pour des vins caractérisés par ce niveau de production.
+
+Si on mesure la production en $m^3$, on obtient, en remplaçant $x_n$
+par $w_n / 0.007$ :
+
+$$
+y_n = \beta_0 + \beta_x \ln (w_n / 0.007) + \epsilon_n = 
+y_n = (\beta_0 - \beta_x \ln 0.007) + \beta_x \ln w_n + \epsilon_n
+$$
+
+```{r }
+nl_yw <- lm(y ~ log(w), Wine2)
+coef(nl_yw)
+```
+La pente est inchangée, que l'on mesure la production en caisses ou en
+$m^3$, lorsque la production double, le prix baisse de 
+`r prtcoef(nl_yw, 2, 2)`. Conformément à l'équation ci-dessus, la
+constante est modifiée de $-\beta_x\ln 0.007$ :
+
+```{r collapse = TRUE}
+coef(nl_yw)[1] - coef(nl_yx)[1]
+- coef(nl_yw)[2] * log(0.007)
+```
+
+Si on mesure la production en $2020, on a :
+
+$$
+\frac{q_n}{1.5} = \beta_0 + \beta_x \ln x_n + \epsilon_n
+$$
+
+Par conséquent, tous les éléments du modèle initial vont être
+multipliés par 1.5 :
+
+```{r collapse = TRUE}
+nl_qx <- lm(q ~ log(x), Wine2)
+coef(nl_qx)
+coef(nl_qx) / coef(nl_yx)
+resid(nl_qx)[1:3]
+resid(nl_qx)[1:3] / resid(nl_yx)[1:3]
+```
+
+### Variable expliquée en logarithme
+
+Si la variable expliquée est en logarithme, cela signifie que l'on
+part d'un modèle multiplicatif :
+
+$$
+y_n = f(x_n, \beta) (1 + \eta_n)
+$$
+
+où $f$ est une fonction de la variable explicative et des paramètres à
+estimer et $\eta_n$ est un terme d'erreur **multiplicatif**. Par
+exemple, si $\eta_n=-0.2$, cela signifie que la valeur de la bouteille
+est inférieure de 20% à la valeur moyenne des bouteilles caractérisées
+par ce niveau de production.
+
+En passant en logarithmes et en spécifiant $f(x_n, \beta) =
+e^{\beta_0 + \beta_x x_n}$, on obtient :
+
+$$
+\ln y_n = \beta_0 + \beta_x x_n + \ln(1 + \eta_n) = \beta_0 + \beta_x x_n + \epsilon_n
+$$
+
+Le terme d'erreur est donc $\epsilon = \ln(1 + \eta_n)$. Or, pour
+$\eta_n$ "petit", on a $\ln(1+\eta_n) \approx \eta_n$. Par exemple, 
+$\ln(1 + 0.05) = `r round(log(1+0.05), 3)`$ et 
+$\ln(1 - 0.10) = `r round(log(1-0.10), 3)`$
+
+```{r }
+ln_yx = lm(log(y) ~ x, Wine2)
+coef(ln_yx)
+```
+
+La constante indique désormais la valeur moyenne de $\ln y$ lorsque $x
+= 0$. En prenant l'exponentielle de la constante, on peut alors avoir
+une idée de la valeur moyenne d'une bouteille d'un vin dont la
+production est très faible :
+
+```{r }
+exp(coef(ln_yx)[1])
+```
+On obtient une valeur de `r round(exp(coef(ln_yx)[1]), 2)`, soit une
+valeur assez proche de celle obtenue dans le modèle linéaire 
+(`r prtcoef(nn_yx, 1, 2)`).
+
+Le coefficient $\beta_x$ est désormais la dérivée de $\ln y$ par
+rapport à $x$ :
+
+$$
+\frac{d \ln y}{d x} = \frac{dy / y}{d x}
+$$
+
+Il s'agit donc du rapport entre une variation relative de $y$ et une
+variation absolue de $x$. Cela indique ici que lorsque la production
+augmente de une caisse, la variation relative du prix est de 
+`r prtcoef(ln_yx, 2, 5)`, soit $0.001$%.
+
+Mesurons désormais la production en $m^3$ : 
+
+$$
+\ln y_n = \beta_0 + \beta_x (w_n / 0.007) + \epsilon_n = \beta_0 +
+(\beta_x / 0.007) w_n + \epsilon_n
+$$
+
+Le seul effet est donc que comme la variable explicative est
+multipliée par 0.007, le coefficient associé est divisé par 0.007 :
+
+```{r }
+ln_yw = lm(log(y) ~ w, Wine2)
+coef(ln_yw)
+coef(ln_yx) / coef(ln_yw)
+```
+en revanche la constante, les valeurs prédites et résiduelles sont
+inchangées.
+
+Si on mesure la production en $2020 :
+
+$$
+\ln \frac{q}{1.5} = \beta_0 + \beta_x x + \epsilon_x
+$$
+
+soit encore :
+
+$$
+\ln q = (\beta_0 + \ln 1.5) + \beta_x x + \epsilon_x
+$$
+
+Le seul effet du changement d'unité de la variable expliquée est
+d'augmenter la constante de $\ln 1.5$ :
+
+```{r collapse = TRUE}
+ln_qw <- lm(log(q) ~ w, Wine2)
+coef(ln_qw)
+coef(ln_qw) - coef(ln_yw)
+log(1.5)
+```
+La pente, les valeurs résiduelles et prédites sont inchangées.
+
+
+### Variables explicatives et expliquées en logarithmes
+
+On estime désormais le modèle suivant :
+
+$$
+\ln y_n = \beta_0 +\beta_x \ln x_n + \epsilon_n
+$$
+
+Dans ce cas, la pente est la dérivée de $\ln y$ par rapport à $\ln x$,
+soit :
+
+$$
+\beta_x = \frac{d\ln y}{d\ln x}=\frac{dx / x}{dy / y}
+$$
+
+et s'interprète donc comme un rapport de variations relatives :
+
+
+```{r }
+ll_yx <- lm(log(y) ~ log(x), Wine2)
+coef(ll_yx)
+```
+Lorsque $dx / x = 1$, c'est-à-dire lorsque la production double, la
+variation relative du prix est de `r prtcoef(ll_yx, 2, 3)` soit
+environ `r 100 * prtcoef(ll_yx, 2, 3)`%. On peut dire également que
+lorsque la production augmente de 1%, le prix baisse de 
+`r prtcoef(ll_yx, 2, 3)`%, il s'agit d'une élasticité.
+
+Désormais, lorsque la production tend vers 0, le prix tend vers
+l'infini. La constante n'a plus le même sens que précédemment.
+
+L'intérêt du modèle en double log est que la valeur des pentes est
+indépendante des unités de mesure. Le fait de modifier les unités de
+mesure de la variable explicative et/ou expliquée n'a d'influence que
+sur la constante, qui de toute façon n'est pas interprétable.
+
+```{r }
+ll_yw <- lm(log(y) ~ log(w), Wine2)
+ll_qx <- lm(log(q) ~ log(x), Wine2)
+ll_qw <- lm(log(q) ~ log(w), Wine2)
+rbind(ll_yx = coef(ll_yx), ll_yw = coef(ll_yw),
+      ll_qx = coef(ll_qx), ll_qw = coef(ll_qw))
+```
+
+## Variable explicative catégorielle
+
+Une variable catégorielle est, comme son nom l'indique, une variable
+qui permet de définir des catégories. Chaque observation est alors
+associée à une catégorie et une seule. 
+
+### Variable explicative dichotomique
+
+Le tableau `Wine` contient une variable appelée `vineyard` qui permet
+d'identifier les vins d'appelation et qui a deux modalités (`"yes"` et
+`"non"`).  Commençons par transformer cette variable en variable
+numérique (1 pour `"yes"` et 0 pour `"no"`).
+
+```{r }
+Wine <- Wine %>% mutate(vineyard = ifelse(vineyard == "yes", 1, 0))
+```
+
+
+```{r }
+ui_us <- lm(log(price) ~ log(cases), Wine)
+```
+
+
+#### Variable expliquée linéaire
+
+Commençons à analyser si le prix moyen est différent pour
+les deux catégories :
+
+```{r }
+MWine <- Wine %>% group_by(vineyard) %>% summarise(price = mean(price))
+MWine
+```
+On constate un écart de `r round(MWine$price[2] - MWine$price[1], 2)` $
+entre les deux catégories.
+
+On estime le modèle linéaire :
+
+$$
+y_n = \beta_0 + \beta_x x_n + \epsilon_n
+$$
+
+Considérons deux vins caractérisés par le même $\epsilon_n$. Appelons
+$y_n^1$ celui qui est un vin d'appellation celui qui n'en est pas. On
+a alors :
+
+$$
+y_n^1 - y_n ^ 0 = \beta_x
+$$
+
+```{r }
+lin_bin <- lm(price ~ vineyard, Wine)
+coef(lin_bin)
+```
+
+Dans ce cas, $\beta_0$ correspond au prix moyen pour $x=0$,
+c'est-à-dire pour les biens qui ne sont pas des vins
+d'appellation. Quant à $\beta_x$ il mesure la différence entre les
+deux valeurs moyennes, c'est-à-dire le supplément moyen de prix pour
+les vins d'appelation par rapport aux vins qui ne sont pas des vins
+d'appellation. Par construction, la somme des deux coefficients
+$\beta_0+\beta_x$ correspond au prix moyen pour les vins
+d'appellation.
+
+On représente graphiquement la relation entre `vineyard` et `price`
+par un nuage de points, puis on ajoute la droite de régression et les
+prix moyens pour les deux catégories.
+
+```{r }
+Wine %>% ggplot(aes(vineyard, price)) + geom_jitter(width = .05, alpha = 0.25) +
+    geom_smooth(method = "lm", se = FALSE) +
+    geom_point(data = MWine, col = "red", size = 4) +
+    coord_cartesian(ylim = c(20, 50))
+```
+
+Comme il y a beaucoup de points, on utilise `geom_jitter` plutôt que
+`geom_point` de manière à introduire un petit écart horizontal pour
+les points pour lesquels les valeurs de $x$ sont uniquement 0 et 1. De
+plus, on utilise l'argument `alpha` de manière à alléger l'affichage
+des nombreux points. On constate que la droite de régression passe
+bien par les deux points moyens pour les deux catégories.
+
+#### Variable expliquée logarithmique
+
+On a désormais :
+
+$$
+\ln y_n = \beta_0 + \beta_x + \epsilon_n
+$$
+
+Pour deux vins caractérisés par le même $\epsilon$, on a désormais :
+
+$$
+\ln y^1_n - \ln y^0_n = \beta_x
+$$
+
+soit finalement, en notant $\tau_x = \frac{y^1_n - y^0_n}{y^0_n}$ le
+taux de variation relative de prix entre un vin avec et sans
+appellation :
+
+$$
+\ln y^1_n - \ln y^0_n = \ln (1 + \tau) = \beta_x
+$$
+
+Le coefficient est donc égal à $\ln (1 + \tau)$ et on sait que, pour
+$\tau$ petit, on a $\ln (1 + \tau)$.
+
+
+```{r }
+log_bin <- lm(log(price) ~ vineyard, Wine)
+coef(log_bin)
+```
+$\hat{\beta_x}=`r prtcoef(log_bin, 2, 2)`$ représente le taux de
+variation relative approximatif, alors qu'on obtient la vraie valeur en
+utilisant la formule $\tau = e^{\beta_x}-1$, soit ici 
+`r round(exp(coef(log_bin)[2]) - 1, 2)` ; le coefficient estimé
+constitue une bonne approximation du taux de variation relative entre
+les deux catégories de vin. 
+La constante estimée est la prédiction de la moyenne de $\ln y$ pour
+$x = 0$. En prenant l'exponentielle de la constante, on obtient 
+`r round(exp(coef(log_bin)[1]), 2)`$.
+
+
+### Variable expliquée polythomique
+
+Considérons désormais le cas où la variable catégorielle prend plus de
+deux modalités. C'est ici le cas en particulier de la variable
+`region` :
+
+```{r }
+Wine %>% count(region) %>% print(n = Inf)
+```
+
+Les modalités sont 8 régions de Californie et l'Etat de
+Washington. Pour simplifier, nous n'isolons que les deux régions les
+plus représentées dans l'échantillon (Nappa Valley et Sonoma) et nous
+regroupons les autres régions dans une catégorie résiduelle :
+
+```{r }
+Wine <- Wine %>% mutate(region = fct_lump(region, n = 2))
+```
+
+#### Variable expliquée linéaire
+
+Calculons le prix moyen des vins par région :
+
+```{r }
+MWine <- Wine %>% group_by(region) %>% summarise(price = mean(price))
+MWine
+```
+Les coefficients du modèle linéaire, comme dans le cas précédent,
+permettent de calculer les prix moyens par région. On commence par une
+régression sans constante (en utilisant `- 1` dans la formule) :
+
+```{r collapse = TRUE}
+lin_3 <- lm(price ~ region - 1, Wine)
+head(model.matrix(lin_3), 4)
+coef(lin_3)
+```
+
+La variable catégorielle `region` correspond en fait à trois variables
+indicatrices des trois régions. Les trois coefficients estimés sont
+biens égaux aux trois prix moyens précédemment calculés. Si une
+constante est estimée, alors seules deux variables indicatrices des
+régions sont introduites :
+
+```{r }
+lin_2 <- lm(price ~ region, Wine)
+head(model.matrix(lin_2), 4)
+coef(lin_2)
+```
+`region` est un "`factor`", dont les modalités peuvent être extraites
+à l'aide de la fonction `level` :
+
+```{r }
+pull(Wine, region) %>% levels
+```
+La première modalité est `"napavalley"`, c'est la modalité de
+référence dans un modèle avec constante, autrement dit, il n'y a pas de
+variable indicatrice de cette région dans la régression. La constante
+est désormais le prix moyen des vins de la modalité omise (Nappa
+Valley) et les deux coefficients associés aux deux autres régions
+mesurent le différentiel du prix moyen de chaque région par rapport à
+la région de référence. Par exemple, on retrouve le prix moyen pour la
+région Sonoma en sommant les deux premiers coefficients :
+
+```{r }
+unname(coef(lin_2)[1] + coef(lin_2)[2])
+```
+Pour définir la modalité `"other"` comme modalité de référence, il
+faut utiliser la fonction `fct_relevel` :
+
+```{r }
+Wine <- mutate(Wine, region = fct_relevel(region, "Other"))
+```
+
+```{r collapse = TRUE}
+lin_2b <- lm(price ~ region, Wine)
+head(model.matrix(lin_2b), 4)
+coef(lin_2b)
+```
+Le prix moyen pour la région Sonoma est désormais égal à la somme du
+premier coefficient (la constante, qui correspond au prix moyen pour
+la catégorie résiduelle) et du troisième (qui mesure le différentiel
+de prix moyen entre Sonoma et la catégorie résiduelle) :
+
+```{r }
+unname(coef(lin_2b)[1] + coef(lin_2b)[3])
+```
+
+#### Variable expliquée logarithmique
+
+Commençons par calculer la moyenne des *log* du prix pour les
+différentes régions. 
+
+```{r }
+MWine <- Wine %>% group_by(region) %>%
+    summarise(mprice = mean(price), lprice = mean(log(price)),
+              mlprice = exp(lprice))
+MWine
+```
+Par définition, en prenant l'exponentielle de la moyenne des
+logarithmes des prix, on obtient une autre moyenne des prix, qui est
+la moyenne géométrique. Celle-ci est inférieur à la moyenne
+arithmétique, ce qui est un résultat général.
+
+Si on estime le modèle sans constante :
+
+```{r }
+log_3 <- lm(log(price) ~ region - 1, Wine)
+coef(log_3)
+```
+on obtient un modèle dans lequel les trois modalités de la variable
+catégorielle sont introduites. En prenant l'exponentielle des
+coefficients, on obtient une estimation du prix moyen pour chaque
+région : 
+
+```{r }
+exp(coef(log_3))
+```
+qui correspond exactement à la moyenne géométrique des prix par région
+pour l'échantillon.
+
+En ajoutant la constante, deux variables indicatrices seulement sont
+introduites dans l'estimation :
+
+
+```{r }
+log_2 <- lm(log(price) ~ region, Wine)
+coef(log_2)
+```
+La constante correspond à la moyenne des log des prix pour la région
+de référence, c'est-à-dire Nappa Valley. Le coefficient associé à une
+région (Sonoma par exemple) correspond à l'écart entre la moyenne en
+log des  prix pour la région Sonoma par rapport à la région de
+référence. Soit : 
+
+$$
+\ln y^s_n - \ln y^o_n = \ln \frac{y^s_n}{y^o_n} = \ln (1 +
+\tau_{so}) = \approx \tau_{so}
+$$
+
+où $\tau_{so}$ est le pourcentage de variation du prix moyen entre la
+région de Sonoma par rapport à la région de référence. On obtient donc
+un écart approximatif de `r prtcoef(log_2, 2, 2)` 
+(soit `r 100 * prtcoef(log_2, 2, 2)`%) alors que la formule exacte
+donne `r round(exp(coef(log_2)[2]), 2) -1` 
+(soit `r 100 * round(exp(coef(log_2)[2]), 2) - 100`%). L'approximation
+est ici assez grossière car le coefficient est assez élevé.
+
+
+### Variables expliquées numérique et catégorielle
+
+Souvent, le modèle d'intérêt comportera à la fois des variables
+numériques et des variables catégorielles. On peut alors estimer les
+effets séparés, ou les effets interactifs
+
+#### Effets séparés
+
+Considérons un modèle log-log avec la variable de région :
+
+
+```{r }
+di_us <- lm(log(price) ~ log(cases) + region, Wine)
+coef(di_us)
+```
+L'enseignement des sections précédentes nous permet d'interprêter les
+coefficients : l'élasticité du prix par rapport à la production est
+égale à `r prtcoef(di_us, 2, 2)` et le prix moyen de la bouteille
+est supérieur d'environ `r prtcoef(di_us, 4, 3) * 100`% dans la région de
+Sonoma par rapport à la région résiduelle.
+
+Graphiquement, le modèle estimé correspond à un ensemble de droite
+parallèles, car les ordonnées à l'origine dépendent de la région, mais
+pas la pente, qui est la même pour toutes les régions. Notons que
+la droite associée à chaque région passe par le centre du nuage de
+points de chaque région.
+
+```{r }
+MWine <- Wine %>% group_by(region) %>%
+    summarise(mlcases = mean(log(cases)),
+              mlprice = mean(log(price))) %>% 
+    mutate(int = coef(ui_us)[1] +
+               c(0, unname(coef(ui_us)[3:4])),
+           slp = coef(ui_us)[2])
+gWine <- Wine %>%
+    ggplot(aes(log(cases), log(price), color = region)) +
+    geom_point(size = 0.5, alpha = 0.5) + 
+    geom_point(data = MWine, aes(mlcases, mlprice),
+               size = 10, shape = 20)
+gWine + geom_abline(data = MWine,
+                    aes(intercept = int,
+                        slope = slp,
+                        color = region))
+```
+
+#### Effets intéractifs
+
+Les termes de la formule ne sont pas nécessairement séparées par des
+`+`, qui permet d'estimer des effets linéaires. En particulier, deux
+opérateurs sont particulièrement utiles, `:` et `*`. Commençons par
+utiliser `:` :
+
+```{r }
+ui_ds <- lm(log(price) ~ log(cases) : region, Wine)
+coef(ui_ds)
+```
+Cette régression contient une constante unique autant de pentes que de
+régions. La pente la plus forte est pour la catégorie résiduelle,
+suivie Sonoma et enfin de Napa Valley.
+
+
+```{r }
+MWine <- MWine %>% mutate(slp = coef(ui_ds)[- 1],
+                          int = coef(ui_ds)[1])
+gWine + geom_abline(data = MWine,
+                    aes(intercept = int,
+                        slope = slp,
+                        color = region)) +
+    scale_x_continuous(limits = c(0, 12.5))
+```
+
+Pour avoir des effets séparés *et* interactif, on peu utiliser les
+deux opérateurs `+` et `:` :
+
+
+```{r }
+coef(lm(log(price) ~ log(cases) + region + log(cases) : region, Wine))
+```
+ou plus simplement l'opérateur `*` qui signifie introduire les effets
+séparés et interactifs :
+
+```{r }
+di_ds <- lm(log(price) ~ log(cases) * region, Wine)
+coef(di_ds)
+```
+Dans ce cas, nous avons 3 pentes et 3 ordonnées à l'origine
+estimées. 
+
+```{r }
+MWine <- MWine %>%
+    mutate(slp = coef(di_ds)[2] + c(0, coef(di_ds)[5:6]),
+           int = coef(di_ds)[1] + c(0, coef(di_ds)[3:4]))
+gWine + geom_abline(data = MWine,
+                    aes(slope = slp,
+                        intercept = int,
+                        color = region))
+```
+
+
+En fait, on peut obtenir le même résultat en estimant le modèle sur
+les trois sous-échantillons de manière indépendante.
+
+
+```{r }
+coef(di_ds)
+coef_other <- coef(lm(log(price) ~ log(cases), Wine, subset = region == "Other"))
+coef_nvalley <- coef(lm(log(price) ~ log(cases), Wine, subset = region == "napavalley"))
+coef_sonoma <- coef(lm(log(price) ~ log(cases), Wine, subset = region == "sonoma"))
+coef_other
+coef_nvalley - coef_other
+coef_sonoma - coef_other
+```
+
+
+```{r }
+lmtest::waldtest(ui_us, di_us, di_ds)
+```

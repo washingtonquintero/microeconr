@@ -1,0 +1,2942 @@
+# Simple Regression Model
+
+
+```{r include = FALSE, message = FALSE, eval = FALSE}
+library("tidyverse")
+pricetime <- readxl::read_excel("./data/prixtemps.xls")
+pricetime <- mutate(pricetime,
+                    qf = qf1 + qf2,
+                    pf = (pf1 * qf1 + pf2 * qf2) / qf,
+                    gpe = c("SW", "O", "O", "O", "O", "SE", "O", "SW", "O", "SE", "O", "SE", "SW")) %>%
+    select(ville, gpe, qf, qa, pf, pa, tf, ta)
+save(pricetime, file = "./data/pricetime.rda")                    
+```
+
+This chapter introduce the simplest econometric model, the single
+regression model, which is appropriate in the simple case when there
+is only one natural covariate. An econometric analysis consists on
+three elements :
+
+- a structural model,
+- a data set,
+- estimation and tests of the model using the data.
+
+
+## The model and the data set
+
+We'll consider in this chapter the question of mode shares for
+inter-urban transportation. 
+
+### The data set
+
+The `pricetime` data set presents aggregate data about rail and air
+transportation between Paris and 13 French towns in 1995. They are
+reproduced from the book:
+
+Bonnel P (2004), Prévoir la demande de transport, Presses de l’École
+Nationale des Ponts et Chaussées, Paris, 425p.
+
+
+```{r }
+load("./data/pricetime.rda")
+pricetime
+```
+Variables are prices (`pf` et `pa`) in euros, transport times (`tf` et
+`ta`) un minutes and thousands of trips (`qf` et `qa`) for the two
+modes (`f` for rail and `a` for the plane).
+
+We compute the market share of rail:
+
+```{r }
+pricetime <- mutate(pricetime, sf = qf / (qf + qa))
+pricetime %>% pull(sf) %>% summary
+```
+Train's market share has huge variations in the sample, ranging from 
+`r round(min(pricetime$sf) * 100)` to
+`r round(max(pricetime$sf) * 100)`%.
+
+### Structural model
+
+For an individual, the relevant cost of a trip is the generalized
+cost, which is the sum of the monetary cost and the value of his
+travel time. Denoting $h_n$ the time value of individual $n$, in euros
+per hour, the generalized cost for the two modes are:
+
+$$
+\left\{
+\begin{array}{rcl}
+c_{an} &=& p_{an} + 60 h_n t_{an}\\
+c_{fn} &=& p_{fn} + 60 h_n t_{fn}\\
+\end{array}
+\right.
+$$
+
+Plane is typically faster and more expensive than train, which means
+that in the time-value / generalized cost plane, the generalized cost
+for train will be a line with a lower intercept (the price of train is
+lower) and with a higher slope (transport time is higher). Generalized
+cost for both modes and for the two towns of Bordeaux and Nice are
+presented in figure \@ref(fig:costmode)
+
+```{r costmode, fig.cap = "Generalized cost for train and plane", echo = FALSE}
+z <- pricetime %>% filter(ville %in% c("Bordeaux", "Nice")) %>%
+    select(1, 5:8) %>%
+    mutate(h = (pa - pf) / ( (tf - ta) / 60))
+
+v <- tibble(h = c(0, 50),
+            Bordeaux_Plane = z[1, "pa", drop = TRUE] + z[1, "ta", drop = TRUE] * h / 60,
+            Bordeaux_Train = z[1, "pf", drop = TRUE] + z[1, "tf", drop = TRUE] * h / 60,
+            Nice_Plane = z[2, "pa", drop = TRUE] + z[2, "ta", drop = TRUE] * h / 60,
+            Nice_Train = z[2, "pf", drop = TRUE] + z[2, "tf", drop = TRUE] * h / 60
+            )
+v %>% pivot_longer(-1, names_sep = "_", names_to = c("ville", "mode")) %>%
+    ggplot(aes(h, value)) + geom_line(aes(linetype = mode, color = ville)) +
+    coord_cartesian(xlim = c(0, 40), ylim = c(50, 200)) +
+    labs(x = "Value of time", y = "Generalized cost", ville = NULL)
+```
+Every individual will choose the mode with the lowest generalized cost. For
+example, $n$ will choose the train if $c_{fn} < c_{an}$. This will
+depend on the value of time: an individual with a high value of time
+will choose the plane as an individual with a lower travel time will
+choose the train. For given values of prices and travel times, one can
+compute a value of travel time $h^*$ which equates the generalized
+costs of the two modes.
+
+$$
+h^* = \frac{p_a - p_f}{60(t_f - t_a)}
+$$
+
+For Bordeaux and Nice, these time values are respectively 
+`r round(z$h[1], 1)`and `r round(z$h[2], 1)` euros per hour.
+Nice is actually very far from Paris and only people with a very low
+value of time will prefer to spend 7.5 hour in the train. We now
+compute this value for every city:
+
+```{r }
+pricetime <- mutate(pricetime,  h = (pa - pf) / ( (tf - ta) / 60) )
+pricetime %>% pull(h) %>% summary
+```
+There are huge variations of the threshold value of time, as it range
+from `r round(pull(top_n(pricetime, 1, h), h))` 
+(`r pull(top_n(pricetime, 1, h), ville)`) to
+`r round(pull(top_n(pricetime, -1, h), h))` 
+(`r pull(top_n(pricetime, -1, h), ville)`) euros per hour.
+Before considering a theoritical model that links the market share of
+train with the threshold value of time, let's have a first glance of
+the relationship using a scatterplot, see figure \@ref(fig:hsfsmpl).
+
+```{r hsfsmpl, fig.cap = "Share of rail in function of the threshold time value", echo = FALSE}
+pricetime %>% ggplot(aes(h, sf)) + geom_point() +
+    ggrepel::geom_label_repel(aes(label = ville))
+```
+The relationship between the threshold value of time and train's
+market share seems approximatively linear, except for cities where the
+market share of train is very high (more than 75%). For now, we'll
+remove these 4 cities from the sample and plot once again the data for
+this restricted sample, see figure \@ref(fig:hsfsubsmpl).
+
+```{r }
+pricetime <- filter(pricetime, sf < 0.75)
+```
+
+```{r hsfsubsmpl, fig.cap = "Share of rail in function of the threshold time value on a sub-sample", echo = FALSE}
+pricetime %>% ggplot(aes(h, sf)) + geom_point() +
+    ggrepel::geom_label_repel(aes(label = ville))
+```
+
+Now, we consider the distribution of the value of time. If $h$ follows
+a given distribution between $a$ and $b$, train's market share is the
+share of the population for which time value is between $a$ and $h^*$
+(and plane's market share is the share of the population for which
+time value is between $h^*$ and $b$). The simplest probability
+distribution is the uniform distribution, which is defined by a
+constant density equal to $\frac{1}{b-a}$ between $a$ and $b$. It is
+represented in figure \@ref(fig:unifdist).
+
+```{r unifdist, fig.cap = "Model shares with a uniform distribution", echo = FALSE}
+library("latex2exp")
+xmax <- 4
+hmin <- 1
+hmax <- 3
+hstar <- 2.5
+dun <- 1 / (hmax - hmin)
+ymax <- dun
+plot(x = xmax * c(- 0.2, 1) * 1.2, y = dun * c(-0.1, 1) * 1.1, type = "n", axes = FALSE, ann = FALSE)
+polygon(c(hmin, hmin, hstar, hstar), c(0, dun, dun, 0), col = "lightgrey")
+arrows(0, 0, 0, dun * 1.1, length = .1, angle = 10)
+arrows(0, 0, xmax, 0, length = .1, angle = 10)
+text(xmax * 1.05, 0, "h", cex = 1)
+text(0, dun * 1.2, "density", cex = 1)
+text(hmin + (hstar - hmin) / 2, dun / 2, TeX("s_f"))
+text(hstar + (hmax - hstar) / 2, dun / 2, TeX("s_a"))
+lines(c(hmin, hmin, hmax, hmax), c(0, dun, dun, 0), lty = "dotted")
+hticks <- dun / 50
+vticks <- xmax / 100
+lines(c(hmin, hmin), c(-1, 1) * hticks)
+text(hmin, - hticks * 2, TeX("a"), cex = 1)
+lines(c(hmax, hmax), c(-1, 1) * hticks)
+text(hmax, - hticks * 2, TeX("b"), cex = 1)
+lines(c(hstar, hstar), c(-1, 1) * hticks)
+text(hstar, - hticks * 2, TeX("h^*"), cex = 1)
+lines(c(0, hmin), c(dun, dun), lty = "dotted")
+lines(c(-1, 1) * vticks, c(dun, dun))
+text(- vticks * 12, dun, TeX("\\frac{1}{b-a}"))
+```
+
+The area of the rectangle of width $[a,b]$ and height $[0,
+\frac{1}{b-a}]$ is 100%, because the whole population has a time value
+between $a$ and $b$. This rectangle has two components:
+
+- a first rectangle of width $[a, h ^ *]$ which include people for
+  which time value is below  $h^*$ and therefore take the train,
+- a second rectangle of width $[h ^*, b]$ which include people for
+  which time value is higher than $h^*$ and therefore take the plane.
+  
+Stated differently : $s_f = \frac{h^* - a}{b - a} = -\frac{a}{b - a} +
+\frac{1}{b-a} h^*$ and this model therefore predict a linear
+relationship between $h^*$ et $s_f$, the intercept of this line being
+$-\frac{a}{b - a}$ and the slope $\frac{1}{b - a}$.
+
+## Computation of the OLS Estimator
+
+The model we seek to estimate is: $y_n=\alpha+\beta x_n+\epsilon_n$
+with:
+
+- $y_n$: the *explained variable* (or response) for observation $n$,
+- $x_n$: the *explanatory variable* (or covariate) forobservation $n$,
+- $\epsilon_n$ the *error* for observation $n$,
+- $\alpha$ and $\beta$ : unknwown parameters. 
+
+For given values of $\alpha$ and $\beta$, the residual of an
+observation is represented by the vertical distance between the point
+of observation $n$ and the regression line. It is therefore defined
+by: $y_n-\alpha-\beta x_n$.
+
+### Formula for the slope and the intercept of the OLS regression line
+
+For the simple regression model, the objective function is the *sum of
+squares residuals*:
+
+$$
+SSR(\alpha, \beta |x, y)=\sum_{n = 1} ^ N (y_n - \alpha - \beta x_n) ^ 2
+$$
+
+First order conditions for the minimization of $SSR$ are:
+
+$$
+\left\{
+\begin{array}{rcl}
+\frac{\partial SSR}{\partial \alpha}  &=& 
+-2 \sum_{n = 1} ^ N \left(y_n - \alpha - \beta x_n\right) = 0 \\
+\frac{\partial SSR}{\partial \beta}  &=& 
+-2\sum_{n=1}^n x_n\left(y_n-\hat{\alpha}-\beta x_n\right)=0 
+\end{array}
+\right.
+$$
+
+Or, dividing by $-2$
+
+\begin{equation}
+\sum_{n = 1} ^ N\left(y_n - \alpha -\beta x_n\right) = 0 
+(\#eq:cpoalpha)
+\end{equation}
+
+\begin{equation}
+\sum_{n = 1} ^ N x_n\left(y_n - \alpha - \beta x_n\right) = 0 
+(\#eq:cpobeta)
+\end{equation}
+
+Equation \@ref(eq:cpoalpha) implies that 
+
+\begin{equation}
+\bar{y} = \hat{\alpha} + \hat{\beta} \bar{x}, 
+(\#eq:cpoalpha2)
+\end{equation}
+
+which means that the sample mean is on the
+regression line. It also implies that $\bar{\hat{\epsilon}}=0$, so
+that equation \@ref(eq:cpobeta) can be rewriten as:
+
+$$\hat{\sigma}_{x\epsilon} = \frac{\sum_{n = 1} ^ N (x_n -
+\bar{x})(\hat{\epsilon}_n - \bar{\hat{\epsilon}})}{N} = 0$$
+
+which means that the regression is such that the sample covariance of
+the covariate and the residuals is 0.
+
+Substracting \@ref(eq:cpoalpha2) from \@ref(eq:cpobeta), one gets:
+
+$$
+\sum_{n = 1}^N x_n\left(\left(y_n - \bar{y}\right)-\beta \left(x_n -
+\bar{x}\right)\right) = 0 
+$$
+
+Moreover, $\sum_{n = 1} ^ N \bar{x}\left(\left(y_n - \bar{y}\right) -
+\beta\left(x_n - \bar{x}\right)\right) = 0$ and so:
+
+$$
+\sum_{n=1} ^ N \left(x_n - \bar{x}\right)\left(\left(y_n -
+\bar{y}\right) - \beta\left(x_n - \bar{x}\right)\right) = 0 
+$$
+
+Solving for $\beta$, we finally get the estimator of the slope:
+
+\begin{equation}
+  \hat{\beta} = \frac{\sum_{n = 1} ^ N
+  (x_n - \bar{x})(y_n - \bar{y})}{\sum_{n = 1} ^ N
+  (x_n - \bar{x}) ^ 2} = 
+  \frac{S_{xy}}{S_{xx}}=
+  \frac{\hat{\sigma}_{xy}}{\hat{\sigma}_x ^ 2}=
+  \hat{\rho}_{xy} \frac{\hat{\sigma}_y}{\hat{\sigma}_x}
+  (\#eq:slrbeta)
+\end{equation}
+
+We give three formulation of the slope estimator:
+
+- the first one indicates that it is the ratio of the covariation of
+  $x$ and $y$: $S_{xy}=\sum_{n = 1} ^ N (x_n - \bar{x})(y_n -
+  \bar{y})$ and the variation of $x$: 
+  $S_{xx}= \sum_{n = 1} ^ N (x_n - \bar{x}) ^ 2$,
+- the second one is obtained by dividing both sides by the sample
+  size, so that estimator is now the ratio of the sample covariance
+  between $x$ and $y$ and the variance of $x$,
+- the third one is obtained by introducing the coefficient of
+  correlation of $x$ and $y$: $\hat{\rho}_{xy}
+  =\frac{\hat{\sigma}_{xy}}{\hat{\sigma}_x\hat{\sigma_y}}$, so that the
+  estimator is also expressed as the product of the coefficient of
+  correlation and the ratio of the standard deviations. 
+
+This last formulation is particularly intuitive: $\hat{\rho}_{xy}$ is
+a pure measure of the correlation between the covariate and the
+response. This number has no unity and lies in the -1/+1 interval,
+which indicate a perfect negative/positive correlation. The ratio of
+standard deviations add to the coefficient of correlation the relevant
+unit, which is the unit of $y$ divided by the unit of $x$.
+
+With this estimator of the slope in hand, we easily get the estimator
+of the intercept using \@ref(eq:cpoalpha2):
+
+\begin{equation}
+  \hat{\alpha}=\bar{y}-\hat{\beta} \hat{x}
+  (\#eq:slralpha)
+\end{equation}
+
+### Variance Decomposition and the $R^2$
+
+For one observation $n$, we have, denoting 
+$\hat{y}_n=\hat{\alpha}+\hat{\beta}x_n$ : 
+
+\begin{equation}
+y_n - \bar{y}=\left(y_n - \hat{y}_n\right)+\left(\hat{y}_n - \bar{y}_n\right)
+  (\#eq:varobs)
+\end{equation}
+
+The total variation of $y$ for the individual $n$ from the sample mean
+is therefore the sum of:
+
+- the residual variation: $\left(y_n - \hat{y}_n\right) = \hat{\epsilon}_n$
+- the explained variation: $\hat{y}_n - \bar{y}_n=\hat{\beta}(x_n -
+  \bar{x})$
+
+Taking the square of \@ref(eq:varobs) and summing for all $n$, we get:
+
+$$
+\begin{array}{rcl}
+\sum_{n = 1} ^ N(y_n - \bar{y})^2 & = & \sum_{n = 1}^ N
+\left(\hat{\epsilon}_n + \hat{\beta}(x_n - \bar{x})\right) ^ 2 \\
+& = & \sum_{n = 1} ^ N \hat{\epsilon}_n ^ 2 + \hat{\beta} ^ 2 \sum_{n
+= 1} ^ N (x_n - \bar{x}) ^ 2 \\
+& + & 2 \hat{\beta}\sum_{n = 1} ^ N \hat{\epsilon}_n x_n -
+2\hat{\beta}\bar{x}\sum_{n = 1} ^ N \hat{\epsilon}_n
+\end{array}
+$$
+
+But $\sum_{n = 1} ^ N \hat{\epsilon}_n x_n = 0$ and $\sum_{n = 1} ^ N
+\hat{\epsilon}_n = 0$, so that:
+
+\begin{equation}
+  \sum_{n = 1} ^ N (y_n - \bar{y}) ^ 2 = \hat{\beta} ^ 2
+  \sum_{n = 1} ^ N (x_n - \bar{x}) ^ 2+\sum_{n = 1} ^ N
+  \hat{\epsilon}_n ^ 2
+\end{equation}
+
+$R^2$ measures the share of the variance which is explained by the
+model. We then have:
+
+\begin{equation}
+  R^2=\frac{\hat{\beta}^2\sum_{n=1}^n(x_n-\bar{x})^2}{\sum_{n=1}^n (y_n-\bar{y})^2}
+\end{equation}
+
+using \@ref(eq:slrbeta), we finally get:
+
+$$
+  R^2=\left[\frac{\sum_{n=1}^n(x_n-\bar{x})(y_n-\bar{y})}{\sum_{n=1}^n
+    (x_n-\bar{x})^2}\right]^2
+\frac{\sum_{n=1}^n(x_n-\bar{x})^2}{\sum_{n=1}^n (y_n-\bar{y})^2}
+$$
+
+\begin{equation}
+  R^2=\frac{\hat{\sigma}_{xy}^2}{\hat{\sigma}_x^2\hat{\sigma}_y^2}=\hat{\rho}_{xy}^2
+\end{equation}
+
+The $R^2$ is therefore simply the square of the coefficient of
+correlation between $x$ and $y$: $\hat{\rho}_{xy}$.
+
+### Computation with R
+
+Simple regression models are estimated using `R` with the `lm`
+function. It has two main arguments:
+
+- a formula, which is a symbolic description of the model to be
+  estimated,
+- a data frame that contains the variables used in the formula.
+
+Here, our formula writes `sf ~ h`, which means `sf` as a function of
+`h`. The data frame is `pricetime`. The result of the `lm` function
+may be directly printed (the result is then lost), or saved in an
+object, which can be later printed or manipulated:
+
+```{r }
+lm(sf ~ h, pricetime)
+pxt <- lm(sf ~ h, pricetime)
+```
+writing directly `pxt` is like writing `print(pxt)`, the side effect
+is to print a short description of the results, namely a reminding of
+the function call and the name and the values of the fitted
+coefficients 
+
+Note that by default, an intercept is estimated, along with the slope.
+The coefficients can also be computed "by hand", using the following
+code:
+
+```{r }
+stats <- pricetime %>%
+    summarise(xb = mean(h), yb = mean(sf),
+              Sxx = sum( (h - xb) ^ 2),
+              Sxy = sum( (h - xb) * (sf - yb)),
+              Syy = sum( (sf - yb) ^ 2),
+              sx = sqrt(Sxx / nrow(pricetime)),
+              sy = sqrt(Syy / nrow(pricetime)),
+              sxy = Sxy / nrow(pricetime),
+              rxy = sxy / (sx * sy))
+```
+
+We then can compute the slope estimator using the three previous
+formula:
+
+```{r collapse = TRUE}
+hbeta <- stats$Sxy / stats$Sxx
+hbeta
+stats$sxy / stats$sx ^ 2
+stats$rxy * stats$sy / stats$sx
+```
+and the estimated intercept:
+
+```{r }
+halpha <- stats$yb - hbeta * stats$xb
+halpha
+```
+The results of the estimation is presented on figure \@ref(fig:reserror);
+we add to the scatterplot:
+
+- the sample mean, indicated by a red circle,
+- the regression line,
+- the residuals, represented by vectors: upwards vectors represent
+  positive residuals (eg Brest and Toulon) as downwards vectors
+  represent negative residuals (eg Strasbourg and Nice).
+
+
+```{r reserror, fig.cap = "Residuals and errors", echo = FALSE}
+Mpxtps <- pricetime %>% summarise(h = mean(h), sf = mean(sf))
+dx <- 0
+myarrow <- arrow(length = unit(0.015, "npc"), angle = 15, type = "closed")
+pricetime %>% mutate(hy = fitted(pxt)) %>%
+    ggplot(aes(h, sf)) + geom_point() +
+    geom_smooth(method = "lm", se = FALSE, fullrange = TRUE) +
+    ggrepel::geom_label_repel(aes(label = ville)) + 
+        geom_segment(aes(x = h - dx, xend = h - dx, yend = sf, y = hy),
+                     arrow = myarrow) +
+        geom_point(data = Mpxtps, size = 5, col = "red") 
+```
+Coefficients of the model can be extracted using the `coef`
+function. A specific coefficient can be obtained using the extractor
+`[]` operator with either a position or a name. Not the use of the
+`unname` which remove the names.
+
+```{r }
+coef(pxt)
+coef(pxt)[1]
+int <- unname(coef(pxt)[1])
+slope <- unname(coef(pxt)["h"])
+```
+Once the intercept (`int`) and the slope (`slope`) are extracted, the
+structural parameters can be retrieved as the intercept is $\alpha =
+-\frac{a}{b-a}$ and the slope $\beta =\frac{1}{b-a}$. 
+Therefore, $a = -\frac{\alpha}{\beta}$ and $b =
+\frac{1}{\beta} + a$. We finally get:
+
+```{r }
+ahat = - int / slope
+bhat = 1 / slope + ahat
+c(ahat, bhat)
+```
+Time value therefore lies between `r round(ahat, 2)` and 
+`r round(bhat, 2)` euros per hour. The mean (and median) time value is
+the mean of the two extrem values, 
+which leads to `r round( (ahat + bhat) / 2, 2)` euros per hour.
+
+Residuals and fitted values are obtained using respectively the 
+`resid` and the  `fitted` functions:
+
+```{r }
+resid(pxt)
+fitted(pxt)
+```
+
+There is no straightforward way to extract the $R^2$. In the case of
+the simple linear regression model, as it is simply equal to the
+square of the coefficient of correlation between the unique covariate
+and the response, we can compute it using the previously built `stats`
+table which contains different statistics:
+
+```{r }
+stats %>% select(rxy) %>% mutate(R2 = rxy ^ 2)
+```
+
+$h$ explains therefore 
+`r round(100 * stats$rxy ^ 2)`%
+of the variance of train's modal share.
+
+## The OLS estimator is linear and unbiased
+
+### The DGP
+
+DGP stands for *data generator process*. It describes how the data are
+assumed to have been generated. We assume that: $\mbox{E}(y|x) =
+\alpha + \beta x$ which means that the population mean of $y$ for a
+given value of $x$ is a linear function of $x$. The observed value of
+$y_n$ is $y_n = \mbox{E}(y|x_n) + \epsilon_n$ which means that the
+specific value of $y$ for $n$ is obtained by adding to the population
+mean value of $y$ for $x = x_n$ a random variable $\epsilon$ that we
+call the error, with a mean $\mu_\epsilon$ and a standard-deviation
+$\sigma_\epsilon$. To illustrate the logic of the DGP, we'll assume
+that, for the price-time model, we now the paramaters of the DGP
+(which is of course never the case). Assume that:
+
+```{r include = FALSE }
+
+x <- pricetime %>% pull(h)
+xb <- mean(x) ; s2b = mean( (x - xb) ^ 2)
+snu <- 0.06
+seps <- 0.08
+delta <- sqrt( (seps ^ 2 - snu ^ 2) / s2b)
+gamma <- - delta * xb
+R <- 100000
+N <- 9
+smpl <- rep(1:R, each = N)
+nu <- rnorm(R * N, sd = snu)
+za <- tibble(smpl = smpl, nu = nu,
+             eps = gamma + delta * rep(x, R) + nu)
+za %>% group_by(smpl) %>%
+    summarise(meps = mean(eps),
+              sd1 = sqrt( mean( (eps - meps) ^ 2)),
+              sd2 = sqrt( mean(eps ^ 2)),
+              sd3 = sd(eps)) %>%
+    summarise(meps = mean(meps), sd1 = mean(sd1), sd2 = mean(sd2), sd3 = mean(sd3))
+za %>% summarise(meps = mean(eps),
+                 sd1 = sqrt( mean( (eps - meps) ^ 2)),
+                 sd2 = sqrt( mean(eps ^ 2)))
+```
+
+$$
+\left\{
+\begin{array}{rcl}
+\alpha           & = & - 0.2 \\
+\beta            & = &   0.032 \\
+\mu_\epsilon  & = &   0 \\
+\sigma_\epsilon  & = &   0.08 \\
+\end{array}
+\right.
+$$
+
+The observed data set, in the DGP perspective, represented on figure
+\@ref(fig:dgp).
+
+```{r dgp, fig.cap = "The Data Generating Process", echo = FALSE}
+alpha <- - 0.2
+beta <- 0.032
+pricetime <- pricetime %>%
+    mutate(Eyx = alpha + beta * h,
+           hy = fitted(pxt))
+Mpxtps <- pricetime %>% summarise(h = mean(h), sf = mean(sf))
+dx <- 0.05
+myarrow <- arrow(length = unit(0.015, "npc"), angle = 15, type = "closed")
+pricetime %>% ggplot(aes(h, sf)) + geom_point() +
+    geom_abline(slope = 0.032, intercept = - 0.2) +
+    geom_smooth(method = "lm", se = FALSE, fullrange = TRUE,
+                linetype = "dashed", color = "black") +
+    geom_segment(aes(x = h - dx, xend = h - dx, yend = sf, y = hy),
+                 col = "blue", arrow = myarrow) +
+    geom_segment(aes(x = h + dx, xend = h + dx, yend = sf, y = Eyx),
+                 col = "red", arrow = myarrow) +
+    geom_point(data = Mpxtps, size = 5, col = "red") + 
+    ggrepel::geom_label_repel(aes(label = ville))
+```
+The "true" model is represented by the plain line. The errors are
+represented by the red arrows (positive errors for upward arrows,
+negative errors for negative arrows). Each value of $y_n$ is the sum
+of the population mean value for the value of $x$: $E(y|x = x_n) =
+\alpha + \beta x_n$ (the value returned by the plain line for the
+given value of $x$) and the error $\epsilon_n$ represented by the red
+arrow. For our specific sample, we have a specific vector of
+$\epsilon_n$, which means a specific set of points and a specific
+regression line, the dashed line on the figure.
+
+Now consider other samples, for the same values of $x$, *ie* consider
+that the values of the threshold time values are the same, but that
+the other factors that influence train share (the $\epsilon$) are
+different. In this case, we would get different errors, different
+points and different regression lines.
+
+On figure \@ref(fig:foursmpls), we present 4 different samples (the
+first one being the actual sample), obtained for 4 different sets of
+errors.
+
+```{r foursmpls, fig.cap = "4 different samples", echo = FALSE}
+set.seed <- 1
+dx <- 0
+smpls <- pricetime %>% select(h, sf) %>%
+    mutate(Ey = alpha + beta * h,
+           e_0 = sf - Ey,
+           e_1 = rnorm(9, sd = 0.08),
+           e_2 = rnorm(9, sd = 0.08),
+           e_3 = rnorm(9, sd = 0.08)) %>% 
+    select(- sf) %>% 
+    pivot_longer(-(1:2), names_to = "sample",
+                 values_to = "error") %>% 
+    mutate(sf = Ey + error)
+Msmpls <- smpls %>% group_by(sample) %>%
+    summarise(alpha = coef(lm(formula = sf ~ h))[1],
+              beta =  coef(lm(formula = sf ~ h))[2],
+              h = mean(h),
+              sf = mean(sf),
+              coefs = paste("(", round(alpha, 3), ") - (",
+                            round(beta, 3), ")", sep = ""))
+smpls <- smpls %>% left_join(select(Msmpls, sample, coefs))              
+smpls %>% ggplot(aes(h, sf)) + geom_point() +
+    geom_abline(intercept = alpha, slope = beta) + 
+    geom_smooth(method = "lm", se = FALSE,
+                linetype = "dashed", color = "black") +
+    geom_point(data = Msmpls, color = "red", size = 4) +
+    geom_segment(aes(x = h + dx, xend = h + dx, yend = sf, y = Ey),
+                 col = "red", arrow = myarrow) +
+    facet_wrap(~ coefs)
+```
+For every sample, there is a specific set of errors (the red arrows)
+and therefore specific data points and regression line. The estimated
+intercepts range from
+`r round(Msmpls %>% top_n(-1, alpha) %>% pull(alpha), 3)` to
+`r round(Msmpls %>% top_n(1, alpha) %>% pull(alpha), 3)` 
+and the slopes from
+`r round(Msmpls %>% top_n(-1, beta) %>% pull(beta), 3)` to
+`r round(Msmpls %>% top_n(1, beta) %>% pull(beta), 3)`.
+
+The important point is that $\beta$ is, in practise, an unkown
+parameter. $\hat{\beta}$ depends on the $N$ values and therefore the
+$N$ values of the errors. Each sample is characterized by a specific
+vector of error and therefore a different value of the estimator.
+
+The notion of DGP unables to perform simulations, which have two
+purposes,
+
+- the first one (and the most important in practise) is that in some
+  situations, it is impossible to get analytical results for the
+  properties of an estimator and those properties can in this case be
+  retrieved using simulations,
+- the second one (the one in this bool) is a pedagogical purpose.
+
+We first start by setting the parameters which define the DGP, namely
+$\alpha$, $\beta$ and $\epsilon$:
+
+```{r }
+alpha <- - 0.2
+beta <- 0.32
+seps <- 0.08
+```
+
+Next, we set also the values of $x$, as we are all our results are
+conditioned on $x$, and the size of the sample:
+
+```{r }
+x <- pull(pricetime, h)
+N <- length(x)
+```
+Finally, set the chosen number of samples $R$ and build a tibble that
+contains the necessary data, which are:
+
+- the values of $x$ and $y$ for the different samples,
+- a series that identifies the sample (samples' identifiers are here
+  integers from 1 to $R$ and each id is repeated $N$ times, the size
+  of every individual sample).
+
+```{r }
+R <- 10
+datas <- tibble(smpls = rep(1:R, each = N),
+                x = rep(x, R), eps = rnorm(R * N, sd = seps),
+                y = alpha + beta * x + eps)
+```
+
+Running regressions on every samples require to use `lm(y ~ x)` not on
+the whole data set, but on every subset defined by a value of
+`smpls`. For example, to get the fitted model for the 1st sample, one
+can use:
+
+```{r }
+lm(y ~ x, data = datas, subset = smpls == 1)
+```
+The principle of simulations consist on looping on this command in
+order to get has many values of the estimator as the number of
+samples. A good practise in `R` is to avoid the use of loops whenever
+it's possible and the `group_by` / `summarise` couple of commands of
+the `dplyr`. 
+
+`summarise` returns one or several scalars obtained by performing a
+calculus on the data set. For example, to get the mean of $x$ and the
+estimator of the slope for the whole sample, we would use:
+
+```{r }
+datas %>% summarise(xb = mean(x), hbeta = coef(lm(y ~ x))[1])
+```
+Note that the tibble `datas` is passed as the `data` argument of
+`lm` and that the result is a one-line tibble.
+To perform the same operation not for the whole tibble, but for
+different subset defined by the categorical variable, use `group_by`:
+
+```{r }
+datas %>%
+    group_by(smpls) %>%
+    summarise(hbeta = coef(lm(y ~ x))[2])
+```
+The result is now a tibble with `R` lines, as the computation of the
+OLS estimator is performed for every sample.
+
+### OLS is a linear estimator
+
+By linear, we mean that $\hat{\beta}$ is a linear combination of $y
+=y_1, y_2, \ldots, y_n$ and we'll see that this implies also that it
+is a linear combination of the errors $\epsilon$. 
+
+$$
+\begin{array}{rcl}
+\hat{\beta} & =& \frac{\sum_{n = 1} ^ N   (x_{n} - \bar{x})(y_{n} - \bar{y})}
+{\sum_{n = 1} ^ N   (x_{n} - \bar{x})^ 2}\\
+& = & \sum_{n = 1} ^ N \frac{(x_{n} - \bar{x})}{\sum_{n = 1} ^ N
+(x_{n} - \bar{x}) ^ 2} y_{n}\\
+& = & \sum_{n} c_{n} y_{n}
+\end{array}
+$$
+
+with $c_{n} = \frac{x_{n} - \bar{x}}{\sum_{n = 1} ^ N (x_{n} -
+\bar{x}) ^ 2}$. OLS estimator is therefore a *linear* estimator, *ie* a
+linear combination of the values of $y$. The coefficients of this
+linear combination $c_n$ are such that:
+
+$$\sum_{n = 1} ^ N  c_{n} = 0$$
+
+$$\sum_{n = 1} ^ N  c_{n} ^ 2 = \frac{\sum_{n = 1} ^ N (x_{n} -
+\bar{x}) ^ 2}
+{\left(\sum_{n = 1} ^ N (x_{n} -
+\bar{x}) ^ 2\right) ^ 2}  =
+\frac{1}{\sum_{n = 1} ^ N (x_{n} -
+\bar{x}) ^ 2}
+$$
+ 
+We then replace $y_{n}$ by $\alpha + \beta x_{n} + \epsilon_{n}$ in
+order to express $\hat{\beta}$ as a function of $\epsilon_n$:
+
+$$
+\hat{\beta}=\sum_{n = 1} ^ N c_{n} (\alpha + \beta
+x_{n} + \epsilon_{n}) = \alpha \sum_{n = 1} ^ N c_{n}+\beta\sum_{n = 1}
+^ N \frac{x_{n}(x_{n} - \bar{x})}{\sum_{n = 1} ^ N
+(x_{n} - \bar{x}) ^ 2}+\sum_{n = 1} ^ N c_{n} \epsilon_{n}
+$$ 
+
+As $\sum_{n = 1} ^ N x_{n}(x_{n} - \bar{x}) = \sum_{n = 1} ^ N
+(x_{n} - \bar{x}) ^ 2$ 
+and $\sum_{n = 1} ^ N c_{n} = 0$, we finally get:
+
+\begin{equation} 
+\hat{\beta} = \beta + \sum_{n = 1} ^ N c_{n} \epsilon_{n} 
+\end{equation} 
+
+The deviation of the estimator of the slope of the OLS line
+$\hat{\beta}$ from the true value $\beta$ is therefore a linear
+combination of the $N$ errors. The properties of $\hat{\beta}$ are
+therefore directly linked to those of $\epsilon_n$.
+
+$$
+y_n = \alpha + \beta x_n + \epsilon_n
+$$
+
+### The errors have 0 expected value
+
+Remind that we suppose that, for the true model: $\alpha = -0.2$,
+$\beta = 0.032$ and $\mbox{E}(\epsilon) = 0$. Now consider an
+alternative model:
+
+$$
+y_n = \gamma + \beta x_n + \eta_n
+$$
+
+for which the slope is the same, the intercept $\gamma = 0.1$
+and the error term is $\eta_n$. 
+
+We have therefore:
+
+$$
+y_n = \alpha + \beta x_n + (\eta_n + \gamma - \alpha)
+$$
+
+or:
+
+$$
+\eta_n = \epsilon_n + \alpha - \gamma
+$$
+
+and therefore $\mbox{E}(\eta) = \mu_\eta = \mbox{E}(\epsilon) + \alpha - \gamma =
+\alpha - \gamma$.
+
+Therefore, the alternative model is:
+
+$$
+y_n = \gamma + \mu_\gamma + \beta x_n + \epsilon
+$$
+
+which is the same model as the initial model with $\alpha$ replaced by
+$\gamma + \mu_\gamma$. Therefore, it is impossible to discriminate
+between the the initial and the alternative model, as what can be
+estimated is the sum of the intercept and the expected value of the
+errors ($\gamma + \mu_\gamma$) and the two elements of this sum can't
+be estimated. Therefore, it is simpler to set $\mu_\gamma=0$, *ie*
+suppose that the expected value of the errors are 0.
+
+Figure \@ref(fig:everrors) illustrate the "true model" (plain line and
+$\epsilon_n$ represented by red vectors) and the alternative mode
+(dashed line and $\eta_n$ represented by blue vectors).
+
+```{r everrors, fig.cap = "Intercept and the expected value of the error", echo = FALSE}
+alpha <- - 0.2
+beta <- 0.032
+gamma <- 0.1
+pricetime <- pricetime %>%
+    mutate(Eyx = alpha + beta * h,
+           Eyx2 = gamma + beta * h)
+dx <- 0.1
+ticks <- 0.5
+myarrow <- arrow(length = unit(0.015, "npc"), angle = 15, type = "closed")
+subdata <- filter(pricetime, ville %in% c("Toulouse", "Strasbourg", "Brest"))
+
+pricetime %>% ggplot(aes(h, sf)) +
+    geom_point() +
+#    geom_label(aes(label = ville)) + 
+    geom_abline(slope = 0.032, intercept = alpha) +
+    geom_abline(slope = 0.032, intercept = gamma, linetype = "dashed") +
+    geom_segment(data = subdata, aes(x = h + dx, xend = h + dx, yend = sf, y = Eyx), col = "red", arrow = myarrow) +
+    geom_segment(data = subdata, aes(x = h - dx, xend = h - dx, yend = sf, y = Eyx2), col = "blue", arrow = myarrow) +
+    geom_vline(xintercept = 0) +
+    geom_text(aes(x = - 2, y = alpha, label = TeX("$\\alpha = \\gamma + \\mu_\\gamma$", output = "character")), parse = TRUE) + 
+    geom_text(aes(x = - 2, y = gamma, label = TeX("$\\gamma$", output = "character")), parse = TRUE) +
+    geom_segment(data = data.frame(y = c(alpha, gamma)), aes(x = - ticks, xend = + ticks, y = y, yend = y)) + 
+    coord_cartesian(xlim = c(- 3, 30), ylim = c(- 0.3, 0.7))
+```
+
+### The OLS estimator is unbiased
+
+An estimator is unbiased if its expected value is the true value, ie
+$\mbox{E}(\hat{\beta}) = \beta$. For the OLS estimator we have:
+
+$$
+\mbox{E}(\hat{\beta}) = \beta + \sum_{n = 1} ^ N
+E(c_{n}\epsilon_{n})
+$$
+
+For now, we'll consider the expected values conditional on the values
+of $x$. To illustrate this difficult point, consider the following
+example:
+
+The model share doesn't depend only on the threshold value of time,
+but also on the share of the professional travelers $w$; a lot of
+those travelers are making a connection in Paris and therefore,
+everything other equal, prefer plane as the connexion is much easier
+at the airport than with train, which often require a change of
+station. That means that towns with a high value of $w$ will have a
+lower train share than $\alpha + \beta x_n$ (which means a negative
+error) and towns with a low value of $w$ will have a positive error. Now
+imagine that the rail company seek to attract professional
+travelers. In this case, it will try to reduce transport time by train
+for towns with a high share of professional travelers. As the
+explanatory variable is $h = \frac{t ^ f - t ^ a}{p ^ a - p ^ t}$,
+this will induce a negative correlation between $h$ and
+$w$. Therefore:
+
+- $w$ is negatively correlated with $\epsilon$ (a higher share of
+  professional customers reduce the rail share for given values of
+  time and fares, *ie* for a given value of $x$),
+- $w$ is negatively correlated with $x$ (a higher share of
+  professional customers leads the rail company to reduce rail travel
+  time and therefore the threshold value of time $x$).
+
+$\epsilon$ therefore includes the effect of the unobserved variable
+$w$, with a *negative* effect. As $x$ is *negatively* correlated with
+$w$, it is also *positively* correlated with $\epsilon$ (an positive
+variation of $x$ is in general accompanied by a negative variation of
+$w$ and therefore a positive variation of the unobserved part of the
+response $\epsilon$. To represent this correlation, suppose that
+$\epsilon_n$ is a linear function of $x_n$:
+
+$$
+\epsilon_n = \gamma + \delta x_n + \nu_n
+$$
+
+with, following our case, $\delta > 0$. 
+
+We assume that $\nu$ has a 0 expected value and is uncorrelated with
+$x$. The conditional mean of $\epsilon_n$ is the expected value of
+$\epsilon$ for $x = x_n$: $\mbox{E}(\epsilon_n\mid x_n) = \gamma +
+\delta x_n$.  The conditional variance is: $\mbox{V}(\epsilon_n\mid
+x_n) = \sigma_\nu ^ 2$, as $x_n$ is fixed.
+
+To get the unconditional mean, we take the expected values of the the
+conditional mean with respect to $x$:
+
+$$
+\mbox{E}(\epsilon) = \mbox{E}_x\left[\mbox{E}(\epsilon_n\mid x_n)\right] = \gamma + \delta \mu_x
+$$
+
+To get the unconditional variance, we apply the rule of the variance:
+
+$$
+\mbox{V}(\epsilon) = \mbox{E}_x\left[\mbox{V}(\epsilon\mid x)\right] + 
+\mbox{V}_x\left[\mbox{E}(\epsilon\mid x)\right] = \sigma_\nu ^ 2 + 
+\delta ^ 2 \sigma_x ^ 2
+$$
+
+Finally, the covariance between $x$ and $\epsilon$ is:
+
+$$
+\mbox{cov}(x, \epsilon) = \mbox{E}\left( (x - \mu_x) \epsilon\right) = 
+\mbox{E}\left( (x - \mu_x) (\gamma + \delta x + \nu)\right) = \delta
+\sigma_x ^ 2
+$$
+
+$\mbox{E}(\hat{\beta} \mid x)$ indicates what is the expected
+value of the estimator for a given vector of $x$. We then have:
+
+$$
+\begin{array}{rcl}
+\mbox{E}(\hat{\beta}\mid x) &=& \beta + \sum_{n = 1} ^ N
+\mbox{E}(c_{n}\epsilon_{n} \mid x_n) \\
+&=& \beta + 
+\frac{1}{S_{xx}}\sum_{n = 1} ^ N 
+\mbox{E}\left((x_n - \bar{x})\epsilon_n \mid x_n\right) \\
+&=&
+\frac{1}{S_{xx}}\sum_{n = 1} ^ N (x_n - \bar{x})
+\mbox{E}\left(\epsilon_n \mid x_n\right) \\
+\end{array}
+$$
+
+The OLS estimator is therefore unbiased if $\mbox{E}\left(\epsilon_n
+\mid x_n\right) = 0$. With $\epsilon_n = \gamma + \delta x_n + \nu_n$,
+$\mbox{E}(\epsilon\mid x = x_n) + \gamma + \delta x_n$ and this
+therefore implies that $\delta = 0$.
+
+$$
+\mbox{E}(\hat{\beta}\mid x) = \beta + \frac{1}{S_{xx}}
+\sum_{n = 1} ^ N (x_n - \bar{x})(\delta + \delta x_n) =
+\beta + \gamma
+$$
+
+Which is quite obvious as, introducing $\epsilon_n = \gamma + \delta
+x_n + \nu_n$ in the formulation of the model $y_n = \alpha + \beta
+x_n + \epsilon_n$, we get:
+
+$$
+y_n = (\alpha + \gamma) + (\beta + \delta) x_n + \nu_n
+$$
+
+
+```{r echo = FALSE}
+x <- pricetime %>% pull(h)
+xb <- mean(x) ; s2b = mean( (x - xb) ^ 2)
+snu <- 0.06
+seps <- 0.08
+delta <-  sqrt( (seps ^ 2 - snu ^ 2) / s2b)
+gamma <- - delta * xb
+```
+
+For the empirical illustration, we set $\sigma_\nu = `r round(snu,
+3)`$ and we set $\delta$ and $\gamma$ so that be get
+$\mbox{E}(\epsilon)=\gamma + \delta \mu_x$ and $\sigma_\epsilon^2 =
+\sigma_\nu ^ 2 + \delta ^ 2 \sigma_x ^ 2$. We therefore have:
+
+$$
+\left\{
+\begin{array}{rcl}
+\mid \delta \mid &=& \sqrt{\frac{\sigma_\epsilon ^ 2 - \sigma_\nu ^
+2}{\sigma_x ^ 2}} = \pm `r round(delta, 5)`\\
+\gamma &=& - \delta \mu_x = \pm `r round(gamma, 5)`
+\end{array}
+\right.
+$$
+
+Figure \@ref(fig:biased) presents 4 samples generated this way, with
+the "true" model represented by the plain line and the estimated model
+by the dashed line, which slope is clearly systematically lower that
+the slope of the line of the "true" model. The positive correlation
+between $x$ and $\epsilon$ therefore induce that the slope estimator
+is upward biased because, in general, observations with low values of
+$x$ have negative errors and observations with high values of $x$ have
+positive errors.
+
+```{r biased, fig.cap = "Biased estimator", echo = FALSE}
+set.seed(1)
+R <- 4
+N <- 9
+nu <- rnorm(N * R, sd = snu)
+eps <- gamma + delta * x + nu
+smpl <- rep(1:4, each = N)
+tibble(smpl = smpl,
+       h = rep(pricetime$h, R),
+       sf = - 0.2 + 0.032 * h + eps) %>%
+    ggplot(aes(h, sf)) +
+    geom_point() +
+    geom_abline(slope = 0.032, intercept = - 0.2) +
+    geom_smooth(se = FALSE, method = "lm", fullrange = TRUE, linetype = "dashed", color = "black") +
+    facet_wrap(~ smpl)
+```
+
+When one consider higher values of $x$, there are two effects on $y$:
+
+- the first one is the direct effect, measured by $\beta$, which is
+  the effect we seek to estimate,
+- the second one is an indirect effect, higher $x$ being in average
+  linked with lower $w$ and therefore to higher $\epsilon$ and higher
+  value of $y$.
+
+
+We can therefore state that the OLS estimator is unbiased if
+$\mbox{E}(\epsilon\mid x) = 0$ *ie* if the error is uncorrelated with
+the explanatory variable.
+
+Let check this result using simulations:
+
+
+```{r }
+R <- 100
+alpha <- - 0.2 ; beta <- 0.032
+seps <- 0.08
+x <- pull(pricetime, h)
+N <- length(x)
+xb <- mean(x)  ; s2b = mean( (x - xb) ^ 2)
+snu <- 0.06    ; seps <- 0.08
+delta <-  sqrt( (seps ^ 2 - snu ^ 2) / s2b)
+gamma <- - delta * xb
+datas <- tibble(smpls = rep(1:R, each = N),
+                x     = rep(x, R),
+                eps1  = rnorm(R * N, seps),
+                eps2  = gamma + delta * x + rnorm(R * N, snu),
+                y1    = alpha + beta * x + eps1,
+                y2    = alpha + beta * x + eps2)
+hbetas <- datas %>% group_by(smpls) %>%
+    summarise(hb1 = coef(lm(y1 ~ x))[2],
+              hb2 = coef(lm(y2 ~ x))[2])
+hbetas %>% print(n = 3)
+```
+to get `R` values of the two estimators. 
+
+```{r }
+hbetas %>% summarise(hb1 = mean(hb1), hb2 = mean(hb2))
+```
+
+The average of the values of $\hat{\beta}$ are close to the
+theoritical expected values, which are $\beta = `r round(beta, 3)`$ for
+the first estimator and $\beta + \gamma = `r round(beta + gamma, 3)`$
+for the second one.
+
+## Simple estimator for the variance of the OLS estimator
+
+The variance of $\hat{\beta}$ is:
+$$
+\begin{array}{rcl}
+\mbox{V}(\hat{\beta}\mid x )& =
+&\mbox{E}\left(\left(\hat{\beta}-\beta\right)^ 2 \mid x\right)\\
+& = &\mbox{E}\left(\left(\sum_{n = 1} ^ N c_{n}\epsilon_{n}\right)^
+2 \mid x \right)\\
+& = & \frac{1}{S_{xx}^2}\mbox{E}\left(\left(\sum_{n = 1} ^ N (x_n - \bar{x})\epsilon_{n}\right)^
+2  \mid x\right)
+\end{array}
+$$
+
+To compute the variance, we therefore have to take the expected value
+of $N ^ 2$ terms $N$ of them being of the form: $(x_n - \bar{x}) ^ 2
+\epsilon_n ^ 2$ and the $N ^ 2 - N$ other of the form:
+$(x_n - \bar{x})(x_m - \bar{x})\epsilon_n\epsilon_m$. This is best
+understanden using matrix notations: the $N^2$ terms are arranged in a
+square matrix of dimension $N$. With $N=4$, we have^[We didn't explicitely
+indicate that the expected values are conditional on $x$ to save place.]:
+
+$$
+\scriptstyle{
+\left(
+\begin{array}{cccc}
+```{r echo = FALSE, results = "asis"}
+strgr <- c()
+for (i in 1:4){
+    for (j in 1:4){
+        if (i == j){
+            strgr <- c(strgr, paste("(x_", i, "-\\bar{x})^2 \\mbox{E}(\\epsilon_", i, "^2)", sep = ""))
+        }
+        else
+            strgr <- c(strgr, paste("(x_", i, "-\\bar{x}) (x_", j, "-\\bar{x}) \\mbox{E}(\\epsilon_", i, "\\epsilon_", j, ")",sep = ""))
+        strgr <- c(strgr, ifelse(j == 4, " \\\\ \n", " & \n"))
+    }
+}
+strgr <- paste(strgr, collapse = "")
+cat(strgr)
+```
+\end{array}
+\right)
+}
+$$
+
+### Uncorrelation and homoskedasticity
+
+$\mbox{V}(\hat{\beta}\mid x)$ is obtained by taking the sum of of
+these $N ^ 2$ terms. The resulting estimator has a very simple form if
+two hypothesis are made:
+
+- $\mbox{E}\left(\epsilon_n ^ 2 \mid x\right)$ is the conditional
+variance of $\epsilon$ given the associated value of $x$. If the
+errors are *homoskedastic*, which means that their variance don't
+depend on $x$, all these terms equal a constant denoted
+$\sigma_\epsilon ^ 2$,
+- $\mbox{E}\left(\epsilon_n \epsilon_m \mid x \right)$ is the
+conditional covariance of two errors given the values of $x$. It
+equals 0 if the errors are *uncorrelated*.
+
+With these two hypotheses in hand, only the diagonal terms are not
+zero and are of the form: $\sigma_\epsilon ^ 2 (x_n - \bar{x}) ^ 2$ so
+that their sum is $\sigma_\epsilon ^ 2 \sum_{n=1}^N (x_n - \bar{x}) ^
+2 = \sigma_\epsilon ^ 2 S_{xx}$, which finally leads to the simplified
+formula of the variance of $\hat{\beta}$
+
+$$
+\mbox{V}(\hat{\beta}\mid x ) =  \frac{\sigma_\epsilon ^ 2}{S_{xx} ^ 2}
+= \frac{\sigma_\epsilon ^ 2}{N\sigma_x^2}
+$$
+
+Note that this it is the "true" variance of $\hat{\beta}$ if the two
+hypothesis are satisfied and that it can't be computed as it depends
+on an unknown parameter $\sigma_\epsilon$. 
+
+$$
+\sigma_{\hat{\beta}} = \frac{\sigma_\epsilon}{\sqrt{N}\hat{\sigma}_x}
+$$
+
+the precision of the estimator, measured by its standard deviation,
+will therefore has three components, that will be illustrated by the
+following figures. 
+
+### Determinants of the precision of the OLS estimator
+
+First consider the "size" of the error, measured by its standard
+deviation $\sigma_\epsilon$. Figure \@ref(fig:sigmaeps) The following
+presents differerent samples with the same DGP, except that samples on
+the second line are generated with a lower value of $\sigma_\epsilon$:
+
+```{r sigmaeps, fig.cap = "Size of the error and the precision of the slope estimator", echo = FALSE}
+set.seed(2)
+alpha <- 1
+beta <- 1
+R <- 6
+N <- 10
+s1 <- 0.5
+s2 <- 0.1
+eps <- rnorm(N * R, sd = c(rep(c(s1, s2), each = N * (R / 2))))
+.x <- runif(N, 0, 2)
+tibble(x = rep(.x, R) , y = alpha + beta * rep(.x, R) + eps,
+       sd = rep(c("low", "high"), each = N * (R / 2)),
+       smpl = rep(rep(1:3, each = N), 2))%>%
+    ggplot(aes(x, y)) + geom_point() + geom_smooth(method = "lm", se = FALSE) +
+    facet_grid(sd ~ smpl)
+```
+
+Samples represented on the first line exhibit large error variance,
+which means that the points present only a rough positive
+correlation. In this case, the slope estimator is imprecise and the
+value obtained is very different from one sample to the other. On the
+contrary, samples on the second line are characterized by a very low
+error variance, which means that on every samples, the points almost
+stand on the same straight line. In this case, the slope of the
+regression line is almost the same and therefore the estimator is very
+precise.
+
+Next consider the sample size. In figure \@ref(fig:smplsize) We take
+the same value of $\sigma_\epsilon$ as in the first row of the
+preeceding figure, but we increase the sample size to 100 for the
+samples of the second line.
+
+```{r smplsize, fig.cap = "Sample size and precision of the estimator", echo = FALSE}
+set.seed(2)
+alpha <- 1
+beta <- 1
+R <- 6
+N <- 10
+N2 <- 100
+s1 <- 0.1
+s2 <- 0.5
+eps <- rnorm((N + N2) * R / 2 , sd = s2)
+.x1 <- runif(N, 0, 2)
+.x2 <- runif(N2, 0, 2)
+x <- c(rep(.x1, R/2), rep(.x2, R/2))
+tibble(x = x , y = alpha + beta * x + eps,
+       sd = c(rep("large", N2 * R / 2), rep("small", N * R / 2)),
+       smpl = c(rep(1:3, each = N2), rep(1:3, each = N))) %>%
+    ggplot(aes(x, y)) + geom_point() + geom_smooth(method = "lm", se = FALSE, fullrange = TRUE) +
+    facet_grid(sd ~ smpl)
+```
+
+Finally, on figure \@ref(fig:varx) consider a variation of the variance of $x$
+
+```{r varx, fig.cap =  "Variance of $x$ and precision of the estimator", echo = FALSE}
+set.seed(2)
+alpha <- 1
+beta <- 1
+R <- 6
+N <- 10
+s1 <- 0.1
+s2 <- 0.5
+eps <- rnorm(N * R, sd = s2)
+.x1 <- runif(N, 0, 2)
+.x2 <- runif(N, -2, 4)
+.x <- c(rep(.x1, R / 2), rep(.x2, R / 2))
+tibble(x = .x , y = alpha + beta * .x + eps,
+       sd = rep(c("low", "high"), each = N * (R / 2)),
+       smpl = rep(rep(1:3, each = N), 2))%>%
+    ggplot(aes(x, y)) + geom_point() +
+    geom_smooth(method = "lm", se = FALSE, fullrange = TRUE) +
+    facet_grid(sd ~ smpl)
+```
+The larger the variance of $x$ is, the more precise is the estimator
+of the slope. Consider the extreme case of no variation of $x$; in
+this case to estimate the effect of $x$ as all the observations are
+characterized by the same value of $x$.
+
+```{r }
+R <- 100
+alpha <- - 0.2 ; beta <- 0.032
+seps <- 0.08
+x <- pull(pricetime, h)
+N <- length(x)
+```
+The data set used for the reference case is:
+
+```{r }
+dataref <- tibble(smpls = rep(1:R, each = N),
+                  x     = rep(x, R),
+                  eps   = rnorm(R * N, sd = seps),
+                  y     = alpha + beta * x + eps)
+```
+For illustrating the influence of $\sigma_\epsilon$, we take a value
+of 0.04:
+
+```{r }
+dataseps <- tibble(smpls = rep(1:R, each = N),
+                   x     = rep(x, R),
+                   eps   = rnorm(R * N, sd = seps / 2),
+                   y     = alpha + beta * x + eps)
+```
+
+We next increase the sample size to $N = 36$, ie we multiply the
+sample size by 4. More specifically, for every sample each value of
+$x$ is repeated 4 times:
+
+```{r }
+N <- length(x) * 4
+xN <- rep(x, 4)
+datasN <- tibble(smpls = rep(1:R, each = N),
+                   x     = rep(xN, R),
+                   eps   = rnorm(R * N, sd = seps),
+                   y     = alpha + beta * x + eps)
+```
+
+Finally, we increase the variation of $x$, simply by multiplying all
+the values by 2:
+
+```{r }
+N <- length(x)
+xv <- x * 2
+datasvx <- tibble(smpls = rep(1:R, each = N),
+                   x     = rep(xv, R),
+                   eps   = rnorm(R * N, sd= seps),
+                   y     = alpha + beta * x + eps)
+```
+
+The standard deviation for the reference case is:
+
+$$
+\hat{\sigma}_{\hat{\beta}} = \frac{\sigma_\epsilon}{\sqrt{N} \sigma_x}=
+\frac{`r round(seps, 3)`}{\sqrt{`r round(N, 0)`}
+     \sqrt{`r round(s2b, 3)`}}
+= `r round(seps / sqrt(N) / sqrt(s2b), 3)`
+$$ 
+
+
+```{r }
+dataref %>% group_by(smpls) %>%
+    summarise(hbeta = coef(lm(y ~ x))[2]) %>%
+    summarise(mean = mean(hbeta), sd = sd(hbeta))
+```
+
+When $\sigma_\epsilon$ is divided by 4 (it reduces from 0.08 to 0.02),
+the standard deviation should be divided by 2:
+
+```{r }
+dataseps %>% group_by(smpls) %>%
+    summarise(hbeta = coef(lm(y ~ x))[2]) %>%
+    summarise(mean = mean(hbeta), sd = sd(hbeta))
+```
+
+When the sample size is multiplied by 4, $\hat{\sigma}_\beta$ is
+divided by 2:
+
+
+```{r }
+datasN %>% group_by(smpls) %>%
+    summarise(hbeta = coef(lm(y ~ x))[2]) %>%
+    summarise(mean = mean(hbeta), sd = sd(hbeta))
+```
+
+Finally, when every value of $x$ is multiplied by 2, $x$'s standard
+deviation is also multiplied by 2 and $\hat{\sigma}_\beta$ should be
+divided by 2:
+
+
+
+```{r }
+datasvx %>% group_by(smpls) %>%
+    summarise(hbeta = coef(lm(y ~ x))[2]) %>%
+    summarise(mean = mean(hbeta), sd = sd(hbeta))
+```
+
+To get the variance of the intercept estimator, take the "true" and
+fitted model for one observation, sum for all the observations and
+divide by $N$:
+
+$$
+\left\{
+\begin{array}{rcl}
+\hat{\alpha} &=& \bar{y} - \hat{\beta} \bar{x} \\
+\alpha &=& \bar{y} -\beta \bar{x} - \bar{\epsilon}
+\end{array}
+\right.
+$$
+
+Note that $\bar{\hat{\epsilon}}=0$, as $\bar{\epsilon} \neq
+0$. Substracting the two equations, we get:
+
+$$
+\begin{array}{rcl}
+(\hat{\alpha} - \alpha) &=&  - (\hat{\beta} - \beta) \bar{x} +
+\bar{\epsilon}\\
+&=& -\sum_n c_n \epsilon_n \bar{x} + \bar{\epsilon} \\
+&=& -\sum_n \left(\bar{x} c_n - \frac{1}{N}\right)\epsilon_n
+\end{array}
+$$
+
+We then square the expression and we take the expected value; with the
+hypothesis of homoskedasticiy and uncorrelation of the errors, the
+expression simplifies to:
+
+$$
+\mbox{V}(\hat{\alpha}) = \sigma_\epsilon^2 
+\sum_n \left(\bar{x} ^ 2 c_n ^ 2 + \frac{1}{N ^ 2} -
+\frac{2\bar{x}}{N} c_n\right)
+$$
+
+As $\sum_n c_n = 0$ and $\sum_n c_n ^ 2 = \frac{1}{N \hat{\sigma}_x ^
+2}$, we finally get:
+
+$$
+\sigma_{\hat{\alpha}} ^ 2 = \frac{\sigma_\epsilon ^ 2}{N \hat{\sigma}_x ^
+2}(\hat{\sigma}_x ^ 2 + \bar{x} ^ 2)
+$$
+
+Finally, to get the covariance between the slope and the intercept
+estimator, we take the product of the two estimators in deviation from
+their expected values. 
+
+$$
+(\hat{\alpha} - \alpha)(\hat{\beta} - \beta) = 
+-\left[\sum_n \left(\bar{x} c_n - \frac{1}{N}\right)\epsilon_n\right]
+\left[\sum_n c_n \epsilon_n\right]
+$$
+
+Taking the expected value, we finaly get:
+
+$$
+\hat{\sigma}_{\hat{\alpha}\hat{\beta}} = - \sigma_\epsilon ^ 2 \sum_n
+\left(\bar{x} c_n ^ 2  - \frac{1}{N} c_n\right) = -
+\bar{x}\frac{\sigma_\epsilon ^ 2}{N \hat{\sigma}_x ^ 2}
+$$
+
+We can compactly write the variance and the covariance of the
+estimator in matrix form:
+
+$$
+\left(
+\begin{array}{cc}
+\sigma_{\hat{\alpha}} ^ 2 & \sigma_{\hat{\alpha}\hat{\beta}} \\
+\sigma_{\hat{\alpha}\hat{\beta}} & \sigma_{\hat{\beta}} ^ 2
+\end{array}
+\right)
+=
+\frac{\sigma_\epsilon ^ 2}{N\hat{\sigma}_x ^ 2}
+\left(
+\begin{array}{cc}
+\bar{x} ^ 2 + \hat{\sigma}_x ^ 2 & - \bar{x} \\
+-\bar{x} & 1
+\end{array}
+\right)
+$$
+
+### Estimation of the variance of the errors
+
+The (conditional) variance of the errors is: $\mbox{E}(\epsilon\mid x)
+= \sigma_\epsilon ^ 2$. If the error were observed, a natural
+estimator would be to take the sample conterpart of this theoritical
+moment: $\frac{1}{N}\sum_{n=1} ^ N (\epsilon_n -\bar{\epsilon}) ^
+2$. As the errors are not observed, this estimator cannot be computed,
+but a feasible estimator is obtained by replacing the unobserved
+errors by the residuals:
+
+$$
+\hat{\sigma}_\epsilon ^ 2 = \frac{\sum_{n=1} ^ N \hat{\epsilon}_n ^ 2}{N}
+$$
+
+To analyse the properties of this estimator, we'll compute the
+variance of one residual. We first substract the "true" model from the
+fitted model for one observation $n$:
+
+$$
+\hat{\epsilon}_n - \epsilon_n = - (\hat{\alpha} - \alpha) - (\hat{\beta} -
+\beta) x_n
+$$
+
+Summing for all $n$ and dividing by $N$, we get:
+
+$$
+ - \bar{\epsilon} = - (\hat{\alpha} - \alpha) - (\hat{\beta} -
+\beta) \bar{x}
+$$
+
+as the sum of the residuals is 0. Substracting, we finally get:
+
+$$
+\hat{\epsilon}_n = \epsilon_n - \bar{\epsilon} - (\hat{\beta} - \beta)
+(x_n - \bar{x})
+$$
+
+Taking the expected value of the square, we get the following variance
+
+$$
+\mbox{V}(\hat{\epsilon}_n) = \sigma_\epsilon ^ 2 +
+\frac{1}{N}\sigma_\epsilon ^ 2 + \frac{(x_n - \bar{x}) ^ 2}{S_{xx}}
+\sigma_\epsilon ^ 2 -
+2  \frac{1}{N}\sigma_\epsilon ^ 2 - 2  \frac{(x_n - \bar{x}) ^
+2}{S_{xx}}\sigma_\epsilon ^ 2
+$$
+
+Note that $\mbox{E}\left(\bar{\epsilon} (\hat{\beta} - \beta) (x_n -
+\bar{x})\right) = 0$. Re-arranging terms:
+
+$$
+\hat{\sigma}_{\hat{\epsilon}_n}= \sigma_\epsilon ^ 2 \left(1 -
+\frac{1}{N} - 
+\frac{1}{N}\frac{(x_n- \bar{x}) ^
+2}{\hat{\sigma}_x ^ 2}\right)
+$$
+
+Note that $\hat{\sigma}_{\hat{\epsilon}_n} < \hat{\sigma}_\epsilon$,
+which means that residuals are in average "smaller" than errors; this
+is a direct consequence of the fact that we minimize the sum of the
+squares of the residuals. Summing for all the observations, we get the
+expected value of the sum of squares residuals:
+
+$$
+\mbox{E}\left(\sum_{n=1} ^ N \hat{\epsilon}_n ^ 2\right) =
+\sigma_{\epsilon} ^ 2 (N - 2)
+$$
+
+Therefore, the previously computed estimator of the variance of the
+errors $\hat{\sigma}_\epsilon ^ 2$ is biased:
+
+$$
+\mbox{E}(\hat{\sigma}_\epsilon ^ 2) =
+\frac{\mbox{E}(\hat{\sigma}_\epsilon ^ 2)}{N} = \sigma_\epsilon ^ 2 \frac{N-2}{N}
+$$
+
+Therefore $\hat{\sigma}_\epsilon$ is downward biased, by a factor of
+$\sqrt{\frac{N-2}{N}}$. For example, for $N=10, 20, 100$, we get 
+$\sqrt{\frac{N-2}{N}} = `r round(sqrt(10/8), 2)`, 
+`r round(sqrt(20/18), 2)`, `r round(sqrt(100/98), 2)`$, which means 
+a `r round(100 * (sqrt(10/8) - 1), 0)`, 
+`r round(100 * (sqrt(20/18) - 1), 0)`, 
+`r round(100 * (sqrt(100/98) - 1), 0)` %
+downward bias for the estimated standard deviation. As the factor
+$\frac{N-2}{N}$ tends to 0, the bias will be neglictable for large
+samples, but can severe in very small samples. We'll from now denote
+$\dot{\sigma}_\epsilon$ the unbiased estimator:
+
+$$
+\dot{\sigma}_\epsilon = \sqrt{\frac{N}{N-2}}\hat{\sigma}_\epsilon
+$$
+
+### Computation of the variance of the OLS estimator with R
+
+We first compute by hand the standard deviations of the estimators of
+the slope and the intercept of the OLS regression line. We first
+extract the $x$ vector, its length $N$, its mean $\bar{x}$ and its
+sample variance $\hat{\sigma}_x ^ 2$:
+
+```{r }
+x <- pull(pricetime, h)
+N <- length(x)
+bx <- mean(x)
+sx <- sqrt(mean((x - bx) ^ 2))
+```
+We then get the sum of square residuals, and the estimated standard
+deviation of $\epsilon$:
+
+```{r }
+heps <- residuals(pxt)
+SSR <- sum(heps ^ 2)
+seps <- sqrt(SSR / (N - 2))
+seps
+```
+
+which finally leads to the estimators of the standard deviation of the
+OLS coefficients:
+
+```{r }
+sbeta <- seps / (sqrt(N) * sx)
+salpha <- sqrt(bx ^ 2 + sx ^ 2) * seps / (sqrt(N) * sx)
+c(salpha, sbeta)
+```
+All these informations can be retrieved easily with `R` using specific
+functions. To get sample size, we have:
+
+
+```{r collapse = TRUE}
+nobs(pxt)
+df.residual(pxt)
+```
+Which return respectively the number of observations and the number of
+degrees of freedom. $\hat{\sigma}_\epsilon$ is computed using:
+
+```{r }
+sigma(pxt)
+```
+The matrix of variance-covariance of the estimators is obtained using
+the `vcov` function:
+
+```{r }
+vcov(pxt)
+```
+To get the standard deviations of the intercept and the slope
+estimators, we first extract the diagonal elements of this matrix and
+we next take the square roots of the values:
+
+```{r }
+sqrt(diag(vcov(pxt)))
+```
+As it is quite cumbursome to take the square root to extract the second element of the
+diagonal of this matrix, we define a convenient function called
+`sdslope` to do this:
+
+```{r collapse = TRUE}
+sdslope <- function(x) sqrt(x[2, 2])
+sdslope(vcov(pxt))
+```
+## The OLS estimator is BLUE
+
+We have seen previously that the OLS estimator is a linear estimator
+(ie it is a linear combination of the $N$ values of $y$ for the
+sample):
+
+$$
+\hat{\beta} = \sum_{n=1} ^ N \left(\frac{ (x_n - \bar{x})}
+{\sum_{n=1} ^ N  (x_n - \bar{x}) ^ 2} \right) y_n =
+\sum_{n=1} ^ N c_n y_n
+$$
+
+### Comparing OLS with other linear unbiased estimators
+
+Consider now an another linear estimator, with weights $a_n$:
+
+$$
+\tilde{\beta} = \sum_{n=1} ^ N \sum_{n=1} ^ N a_n y_n
+$$
+
+Replacing $y_n$ by $\alpha + \beta x_n + \epsilon_n$, we have:
+
+$$
+\tilde{\beta} = \sum_{n=1} ^ N \ a_n (\alpha + \beta x_n)
+= \alpha \sum_{n=1} ^ N  a_n +
+\beta \sum_{n=1} ^ N  a_n x_n +
+\sum_{n=1} ^ N  a_n \epsilon_n
+$$
+
+Therefore, for any unbiased estimator, one must have 
+$\sum_{n=1} ^ N a_n= 0$ and $\sum_{n=1} ^ N a_n x_n = 1$.
+
+We then have: $\tilde{\beta} - \beta = \sum_{n=1} ^ N 
+a_n \epsilon_n$ and the variance of $\tilde{\beta}$ is:
+
+$$
+\sigma_{\tilde{\beta}} ^ 2 = 
+\mbox{E} \left(\left[\sum_{n=1} ^ N a_n
+\epsilon_n\right] ^ 2\right) = 
+\hat{\sigma}_\epsilon ^ 2 \sum_{n=1} ^ N a_n ^ 2
+$$
+
+defining $d_n = a_n - c_n$, we have :
+
+$$
+\sum_{n=1} ^ N  a_n ^ 2 = 
+\sum_{n=1} ^ N  (c_n + d_n) ^ 2 =
+\sum_{n=1} ^ N c_n ^ 2 + 
+\sum_{n=1} ^ N d_n ^ 2 + 
+2 \sum_{n=1} ^ N d_n c_n
+$$
+
+$$
+\begin{array}{rcl}
+\sum_{n=1} ^ N d_n c_n 
+&= & \sum_{n=1} ^ N (a_n - c_n) c_n \\
+&=& \frac{1}{S_{xx}}\sum_{n=1} ^ N a_n x_n - 
+\frac{1}{S_{xx}} \bar{x} \sum_{n=1} a_n - \sum_{n=1} ^ N c_n ^ 2 \\
+&=&0
+\end{array}
+$$
+
+Therefore, $\sum_{n=1} ^ N a_n ^ 2 = \sum_{n=1}^N c_n ^ 2 +
+\sum_{n=1}^N d_n ^ 2$ and :
+
+$$
+\sigma_{\tilde{\beta}}^2 = \sigma_\epsilon ^ 2
+\sum_{n=1} ^ N a_n ^ 2 = 
+\sigma_\epsilon ^ 2 \left( \sum_{n=1}^N c_n ^ 2 + \sum_{n=1}^N d_n ^ 2\right) = 
+\sigma_{\hat{\beta}}^2 + \sigma_\epsilon ^ 2 \sum_{n=1}^N d_n ^ 2 
+$$
+
+Therefore, $\sigma_{\tilde{\beta}}^2 > \sigma_{\hat{\beta}}^2$, which
+mean that the OLS estimator is BLUE, ie it is, among all the unbiased
+linear estimators, the one with the lower variance.
+
+### A practicle example
+
+We've seen previously while estimating the price-time model that we
+don't reject the hypothesis that $\alpha = 0$, which implies for the
+structural model that $a=0$, ie that the minimal time value is 0. To
+fit the model that impose this hypotheses, we need to fit the same
+model without intercept. In `R`, this is performed using either: `- 1`
+or `+ 0` in the formula :
+
+```{r }
+pxt2 <- lm(sf ~ h - 1, pricetime)
+pxt2 <- lm(sf ~ h + 0, pricetime)
+```
+
+The same model can also be estimated by updating the previous fitted
+model `pxt`, using the `update` function which take as first argument
+the model we wish to update:
+
+```{r }
+pxt2 <- update(pxt, . ~ . + 0)
+pxt2 <- update(pxt, . ~ . - 1)
+```
+The formula is updated using `.`, which means the same thing as in the
+initial model. Therefore, `. ~ .` means the initial formula and we
+remove the intercept by either "adding" `0` or "substracting" `-1`.
+
+The fitted model is presented on figure \@ref(fig:nointercept)
+
+```{r nointercept, echo = FALSE, fig.cap = "OLS estimator without intercept"}
+pricetime %>% ggplot(aes(h, sf)) + geom_point() +
+    scale_x_continuous(limits = c(0, 28)) + scale_y_continuous(limits = c(0, 0.70)) +
+    geom_smooth(formula = y ~ x - 1, method = "lm", se = FALSE, fullrange = TRUE)
+```
+For this model without intercept, the formula for the slope is:
+
+$$
+\hat{\beta} = \frac{\sum_{n=1}^N x_n y_n}{\sum_{n=1}^N x_n ^ 2}
+$$
+
+Or, replacing $y_n$ by $\beta x_n + \epsilon_n$ :
+
+$$
+\hat{\beta} = \beta + \frac{\sum_{n=1}^N x_n \epsilon_n}{\sum_{n=1}^N x_n ^ 2}
+$$
+
+for which the variance is:
+
+$$
+\sigma_{\hat{\beta}} ^ 2 = \frac{\sigma_\epsilon ^ 2}{\sum_{n=1}^N x_n ^ 2} =
+\frac{\sigma_\epsilon ^ 2}{N A_{x ^ 2}}
+$$
+
+were $A_{x ^ 2}$ is the arithmetic mean of the squares of $x$.
+
+An alternative estimation method consists on drawing lines from every
+point to the origin, as illustrated in figure \@ref(fig:indslopes).
+
+```{r indslopes, echo = FALSE, fig.cap = "Individual slopes"}
+slope <- summarise(pricetime, slope = mean(sf / h)) %>% pull(slope)
+pricetime %>% ggplot(aes(h, sf)) + geom_point() +
+    geom_segment(aes(x = 0, y = 0, xend = h, yend = sf)) +
+    geom_abline(intercept = 0, slope = slope, col = "blue",
+                lwd = 1, linetype = "dashed")
+```
+
+and to estimate $\beta$ by the mean of the $N$ slopes. Formally, we
+have:
+
+$$
+\tilde{\beta}=\frac{1}{N}\sum_{n = 1} ^ N \frac{y_n}{x_n}
+$$
+
+This is a linear estimator, with weights $a_n = \frac{1}{N}\frac{1}{x_n}$
+
+Replacing $y_n$ by $\beta x_n + \epsilon_n$, we get :
+
+$$
+\tilde{\beta}= \beta + \frac{1}{N}\sum_{n = 1} ^ N \frac{\epsilon_n}{x_n}
+$$
+
+This linear estimator is therefore unbiased. Its variance is:
+
+$$
+\sigma_{\tilde{\beta}} = \frac{\sigma_\epsilon ^ 2}{N ^ 2}\sum_{n =
+1}^N \frac{1}{x_n ^ 2} = \frac{\sigma_\epsilon ^ 2}{N H_{x ^ 2}}
+$$
+
+with $H_{x ^ 2} = \frac{N}{\sum_{n=1}^N\frac{1}{x_n ^ 2}}$ the
+harmonic mean of $x ^ 2$. As the harmonic mean is always lower than
+the arithmetic mean, $\tilde{\beta}$ is less precise than
+$\hat{\beta}$.
+
+```{r }
+slope <- pricetime %>% transmute(pente = sf / h) %>%
+    summarise(pente = mean(pente)) %>% pull(pente)
+slope
+reg2 <- pricetime %>% mutate(resid = sf - slope * h) %>%
+    summarise(seps = sqrt(sum(resid ^  2) / 8),
+              H = 9 / sum( 1 / h ^ 2),
+              A = sum(h ^ 2) / 9,
+              sbtilde = seps / sqrt(N) / sqrt(H))
+reg2
+```
+We check that the harmonic mean (`r round(reg2$H)`) is lower than the
+arithmetic mean (`r round(reg2$A)`). We can therefore summarize the
+results of the estimation:
+
+```{r }
+tibble(Estimate = slope, `Std. Error` = reg2$sbtilde,
+       `t value` = Estimate / `Std. Error`)
+```
+and compare them to OLS results:
+
+```{r }
+coef(summary(pxt2))
+```
+which illustrates the fact that the OLS estimator is more efficient.
+
+## Robust inference
+
+
+The hypothesis of homosckedasticity and uncorrelation are often
+questionable.  Some more general estimators are hopefully
+available. 
+
+### Computation of the heteroskedastic-consistent and cluster estimators
+
+They basically consist on the idea that:
+
+- if the errors were observed, a natural estimator of the unknown
+expected values of the squares or the cross-product of the errors
+(which are respectively $\sigma^2_{\epsilon_n}$ and
+$\sigma_{\epsilon_n\epsilon_m}$) would be the square ($\epsilon_n ^
+2$) and the cross-products ($\epsilon_n \epsilon_m$) of the errors,
+- as the errors are not observed, we can use the residuals instead
+  $\hat{\epsilon}$ as they are unbiased estimators of the errors.
+
+We therefore consider the following matrix:
+  
+$$
+\left(
+\begin{array}{cccc}
+```{r echo = FALSE, results = "asis"}
+strgr <- c()
+for (i in 1:4){
+    for (j in 1:4){
+        if (i == j){
+            strgr <- c(strgr, paste("(x_", i, "-\\hat{x})^2 \\hat{\\epsilon}_", i, "^2", sep = ""))
+        }
+        else
+            strgr <- c(strgr, paste("(x_", i, "-\\hat{x}) (x_", j, "-\\hat{x}) \\hat{\\epsilon}_", i, "\\hat{\\epsilon}_", j,sep = ""))
+        strgr <- c(strgr, ifelse(j == 4, " \\\\ \n", " & \n"))
+    }
+}
+strgr <- paste(strgr, collapse = "")
+cat(strgr)
+```
+\end{array}
+\right)
+$$
+
+and, according to some hypothesis, we take the sum of *some* of this
+terms in order to get an estimate of $\sigma_{\hat{\beta}} ^ 2$.  Note
+first that the sum of all these terms is $\left(\sum_{n = 1} ^ N
+(x_n - \bar{x})\epsilon_{n}\right)^2$, which is equal to zero as:
+$\sum_{n = 1} ^ N (x_n - \bar{x})\epsilon_{n}=0$. Therefore, it is not
+relevant to sum *all* the terms of this matrix to get an estimator of
+the variance of $\hat{\beta}$.
+
+The first possibility is to take only the diagonal terms of this
+matrix, which is relevant if we hypothese that the errors are
+*uncorrelated*. In this case, we get the so-called
+*heterosckedastic-consistent* (or HC) estimator of
+$\sigma_{\hat{\beta}}$:
+
+$$ \hat{\sigma}_{HC\hat{\beta}} ^ 2 = \frac{1}{S_{xx} ^ 2}\sum_{n = 1}
+^ N (x_n - \bar{x}) ^ 2 \hat{\epsilon}_n ^ 2 $$
+
+Consider now the case of error correlation. This often happens when
+some observations share some common unobserved characteristics which
+are included in their (therefore correlated) errors. For example, if
+observations belong to different regions, there errors may share some
+common unobserved features of the region. As an example, in our 4
+observations case, suppose that the first two observations belong to
+one group, and the two other to an other group. Then, a
+cluster-consistent estimator is obtained by summing the following
+subset of the preeceding matrix:
+
+$$
+\left(
+\begin{array}{cccc}
+```{r echo = FALSE, results = "asis"}
+strgr <- c()
+for (i in 1:4){
+    for (j in 1:4){
+        if (i == j){
+            strgr <- c(strgr, paste("(x_", i, "-\\hat{x})^2 \\hat{\\epsilon}_", i, "^2", sep = ""))
+        }
+        else{
+            if ( ( (i %in% 1:2) & (j %in% 1:2) ) | ( (i %in% 3:4) & (j %in% 3:4) ))
+                strgr <- c(strgr, paste("(x_", i, "-\\hat{x}) (x_", j, "-\\hat{x}) \\hat{\\epsilon}_",
+                                        i, "\\hat{\\epsilon}_", j,sep = ""))
+            else strgr <- c(strgr, "\\mbox{--}")
+        }                
+        strgr <- c(strgr, ifelse(j == 4, " \\\\ \n", " & \n"))
+    }
+}
+strgr <- paste(strgr, collapse = "")
+cat(strgr)
+```
+\end{array}
+\right)
+$$
+
+which leads to the clustered estimated variance:
+
+$$
+\hat{\sigma}_{CL\hat{\beta}} = \frac{1}{S_{xx}^2}\sum_{g = 1} ^ G \left(\sum_{n \in g} (x_n -
+\bar{x})\hat{\epsilon}_n \right) ^ 2
+$$
+
+which is consistent with the hypothesis that errors are correlated
+*within* a group, but uncorrelated *between* group.
+
+
+### Computation of the robust estimators with R
+
+The HC-robust estimator consist on replacing $\sigma_\epsilon ^ 2$
+(which is unweighted mean of the square of the residuals) by a
+weighted mean with weights. The small sample bias correction is
+obtained by multiplying by $\sqrt{\frac{N}{N - 2}}$:
+
+```{r }
+wHC <- (x - bx) ^ 2 / (N * sx ^ 2)
+sum(wHC)
+shepsHC <- sqrt(sum(wHC * heps ^ 2))
+sbeta_HC <- shepsHC / (sqrt(N) * sx)
+sbeta_HC
+sbeta_HC_DFC <- sbeta_HC * sqrt(N / (N - 2))
+```
+The `vcovHC` function from the `sandwich` package compute these
+heteroskedastic-robust standard deviations. The `type` argument
+indicate what kind of small sample bias correction should be used; in
+particular, `HC0` means no correction and `HC1` means multiply by
+$\sqrt{\frac{N}{N - 2}}$. `vcovHC`, as `vcov` return a square
+matrix.  As it is quite cumbursome to take the square root to extract the second element of the
+diagonal of this matrix, we define a convenient function called
+`sdslope` to do this:
+
+```{r collapse = TRUE}
+library("sandwich")
+sdslope <- function(x) sqrt(x[2, 2])
+sdslope(vcovHC(pxt, type = "HC0"))
+sdslope(vcovHC(pxt, type = "HC1"))
+```
+
+For the cluster robust estimator, we need to compute $S_{x\epsilon} ^
+2 = \left(\sum_n (x_n -
+\bar{x}) \hat{\epsilon}_n\right) ^ 2$ for each group. We first add the
+residuals as a column of `pricetime` and then we use the `group_by` /
+`summarise` couple of functions to compute $S_{x\epsilon} ^ 2$ for
+each group:
+
+```{r }
+pricetime %>% mutate(heps = residuals(pxt)) %>%
+    select(ville, gpe, heps, h) %>%
+    group_by(gpe) %>%
+    summarise(Sxxg = sum( (h - mean(h)) * heps) ^ 2)
+```
+
+we then use a second summarise to take the square root of the sum of
+    the $S_{x\epsilon} ^ 2$ and we divide by $N \hat{\sigma}_x^2$:
+
+```{r }
+pricetime %>% mutate(heps = residuals(pxt)) %>%
+    select(ville, gpe, heps, h) %>%
+    group_by(gpe) %>%
+    summarise(Sxxg = sum( (h - mean(h)) * heps) ^ 2) %>%
+    summarise(sbeta_CL = sqrt(sum(Sxxg)) / (N * sx ^ 2))
+```
+
+We construct two small sample corrections for this estimator; the
+first one is a correction for the number of groups $\sqrt{\frac{G}{G -
+1}}$ (which is very important here has we have only two groups), the
+second one add the ordinary degrees of freedom correction
+$\sqrt{\frac{N}{N-2}}$:
+
+```{r }
+G <- length(unique(pricetime$gpe))
+pricetime %>% mutate(heps = residuals(pxt)) %>%
+    select(ville, gpe, heps, h) %>%
+    group_by(gpe) %>%
+    summarise(Sxxg = sum( (h - bx) * heps) ^ 2) %>%
+    summarise(sbeta_CL = sqrt(sum(Sxxg)) / (N * sx ^ 2),
+              sbeta_CL_GC = sqrt(G / (G - 1)) * sbeta_CL,
+              sbeta_CL_GNC = sqrt((N - 1) / (N - 2)) * sbeta_CL_GC)
+```
+
+The `vcovCL` function from the `sandwich` package compute these
+cluster robust standard deviations. The `type` argument
+indicate what kind of small sample bias correction should be used; if
+`type = "HC0"` only the number of groups correction is performed, if
+`type = "HC1"` the correction is made for the number of groups and for
+the sample size:
+
+```{r collapse = TRUE}
+sdslope(vcovCL(pxt, cluster = ~ gpe, type = "HC0"))
+sdslope(vcovCL(pxt, cluster = ~ gpe, type = "HC1"))
+```
+
+## Asymptotic properties of the estimator
+
+Asymptotic properties of an estimator consist on the behaviour of this
+estimator when the sample size increase without bound. Compared to
+exact properties which are true and hold whatever the sample size,
+asymptotic properties are approximations, the better the larger the
+sample size is. Two notions of convergence, which relies on two
+therems are used:
+
+- the convergence in probability, based on the *law of large number*,
+- the convergence in distribution, based on the *central-limit*
+  theorem.
+
+### Convergence in probability
+
+We'll consider an estimator as a sequence of random number, indexed by
+the sample size on which it has been estimated:
+
+$$
+{\hat{\beta}_N} = \left\{\hat{\beta}_2, \hat{\beta}_3, \ldots, \hat{\beta}_N\right\}
+$$
+
+This sequence converge in probability to a constant $\theta$ if:
+
+$$
+\lim_{N\rightarrow \infty} \mbox{P}(\mid \hat{\beta}_N - \beta \mid >
+\epsilon) = 0 \,\forall \epsilon
+$$
+
+This is denoted:
+
+$$
+\hat{\beta}_N \xrightarrow{p} \theta \;\mbox{ or } \;\mbox{plim}\,
+\hat{\beta} = \theta
+$$
+
+Convergence in probability implies convergence in mean squares, which
+is defined by:
+
+$$
+\lim_{N\rightarrow + \infty} \mbox{E}\left( (\hat{\beta}_N - \beta) ^
+2\right) = 0
+$$
+
+which means that:
+
+$$
+\left\{
+\begin{array}{l}
+\lim_{N\rightarrow  + \infty} \mbox{E}(\hat{\beta}_N) = \theta \\
+\lim_{N\rightarrow  + \infty} V(\hat{\beta}_N) = 0 \\
+\end{array}
+\right.
+$$
+
+If an estimator converge in mean square to its true value $\beta$,
+we'll write $\hat{\beta}_N \xrightarrow{m.s.} \beta$ and we'll also
+use $\mbox{plim} \, \hat{\beta}_N = \beta$, as convergence in mean
+squares implies convergence in probability. We'll also say in this
+case that the estimator is consistent. Note that, on the opposite, an
+estimator may be unconsistent in different cases:
+
+- the estimator may not converge in probability to any value,
+- the estimator converge in probability to $\theta \neq \beta$.
+
+The consistency of an estimator should't be confused with the
+propriety of unbiasness, even if we often encounter estimators which
+are unbiased *and* consistent:
+
+- unbiasness is an exact property (true or false whatever the sample
+size) and refers to the expected value of the estimator and doesn't
+say anything about its variance,
+- consistency is an asymptotic property, which implies a limit for the
+  expected value ($\beta$) and to the variance.
+  
+Therefore, an unbiased estimator can be unconsistent and on the
+opposite, a consistent estimator can be biased. Consider for example
+that we have a random sample of N observations of a random variable
+$x$ which has a mean and a variance equal respectively to $\mu$ and
+$\sigma^2$. First consider $\bar{x}_N = \frac{1}{N} \sum_{n=1}^N
+x_n$. We have:
+
+$$
+\left\{
+\begin{array}{rcl}
+\mbox{E}(\bar{x}_N) &=& \mbox{E}\left(\frac{1}{N} \sum_{n=1}^N x_n\right) = 
+\frac{1}{N}\sum_{n=1}^N \mbox{E}(x_n)=\frac{1}{N}\sum_{n=1}^N \mu =
+\mu \\
+\mbox{V}(\bar{x}_N) &=& \mbox{V}\left(\frac{1}{N} \sum_{n=1}^N x_n\right) = 
+\frac{1}{N ^ 2}\sum_{n=1}^N \mbox{V}(x_n)=\frac{1}{N^2}\sum_{n=1}^N \sigma^2 =
+\frac{\sigma ^ 2}{N}
+\end{array}
+\right.
+$$
+
+This estimator is unbiased and consistent (the variance tends to 0 and
+the expected value is equal to the population mean $\mu$). Consider
+now two alternative estimators. The first one is:
+
+$$
+\dot{x}_N = \frac{1}{N - 1} \sum_{n=1}^N x_n
+$$
+
+It's first two moments can easily obtained by writing it in terms of
+$\bar{x}_N$: $\dot{x}_N = \frac{N - 1}{N} \bar{x}_N$, so that
+$\mbox{E}(\dot{x}_N) = \frac{N - 1}{N} \mu$ and 
+$\mbox{V}(\dot{x}_N) = \left(\frac{N - 1}{N}\right) ^ 2 \frac{\sigma^
+2}{N}$. The estimator is upward biased, by a multiplicative factor of
+$\frac{N}{N-1}$. The bias is severe in small samples (for example 25%
+if $N$ is equal to 5), but becomes neglectable as $N$ grows. As the
+variance tends to 0 and the expected value to $\mu$, $\dot{x}_N$ is
+consistent. 
+
+The second one is:
+
+$$
+\tilde{x}_N = \frac{1}{2} x_1 + \frac{1}{2} \frac{1}{N - 1} \sum_{n=2}^N x_n
+$$
+
+It consists on first taking the mean for the whole sample except the
+first observation and then take the simple average between it and the first
+observation: $\tilde{x}_N = \frac{1}{2} x_1 + \frac{1}{2}
+x_{N-1}$. It is unbiased, as: 
+
+$$\mbox{E}(\tilde{x}_N) = \frac{1}{2}
+\mbox{E}(x_1) + \frac{1}{2} \mbox{E}(\bar{x}_{N-1})=\frac{1}{2}\mu +
+\frac{1}{2}\mu = \mu
+$$
+
+The variance is:
+$$\mbox{V}(\tilde{x}_N) = \frac{1}{4}
+\mbox{V}(x_1) + \frac{1}{4} \mbox{V}(\bar{x}_{N-1})=
+\frac{1}{4}\sigma^2 + \frac{1}{4}\frac{\sigma^2}{N - 1}
+$$
+
+which tends to $\frac{1}{4}\sigma^2$. Therefore, this unbiased
+estimator is not consistent as its variance doesn't tend to 0. The
+problem is that the weight of the first observation is constant and
+therefore, the value obtained for $x_1$ influence the estimator,
+whatever the size of the sample.
+
+The OLS estimator writes:
+
+$$
+\hat{\beta}_N = \beta + \frac{\sum_{n=1} ^ N (x_n - \bar{x})
+\epsilon_n}{N \hat{\sigma}_x ^ 2} = \beta +
+\frac{\hat{\sigma}_{x\epsilon}}{\hat{\sigma}_x ^ 2}
+$$
+
+where $\bar{x}$ and $\hat{\sigma}_N ^ 2$ are the sample estimate of
+the population mean and variance of $x$. As sample size increase,
+these two estimators converge to their population conterpart, namely
+$\mu_x = \mbox{E}(x)$ and $\sigma_x^2 = \mbox{V}(x)$. 
+$\hat{\sigma_{x\epsilon}} = \frac{\sum_{n=1} ^ N (x_n - \bar{x})
+\epsilon_n}{N}$ is the (unobserved) sample covariance between $x$ and
+$\epsilon$. As $N$ increases, this will converge to the population
+value of the covariance $\sigma_{x\epsilon}$. We therefore have:
+
+$$
+\mbox{plim}\,\hat{\beta}_N = \beta +
+\frac{\sigma_{x\epsilon}}{\sigma_x ^2} = \theta
+$$
+
+it equals $\beta$, in which case the estimator is consistent if x is
+uncorrelated in the population with $\epsilon$
+($\sigma_{x\epsilon}=0$).
+
+### Convergence in distribution: the central-limit theorem
+
+$$
+\hat{\beta}_N = \beta + \frac{\sum_{n=1}^N \omega_n \epsilon_n}{\sqrt{N}\sigma_x}
+$$
+
+with $\omega_n = \frac{x_n - \bar{x}}{\sqrt{N}\hat{\sigma}_x}$. Remind
+that $\sum_{n=1} ^ N \omega_n = 0$ and $\sum_{n=1}^ N\omega_n ^ 2=1$.
+
+
+substracting $\beta$ and multiplying by $\sqrt{N}$, we get:
+
+$$
+\sqrt{N}(\hat{\beta}_N - \beta) = \frac{\sum_{n=1}^N \omega_n \epsilon_n}{\hat{\sigma}_x}
+$$
+
+The distribution of $\sqrt{N}(\hat{\beta}_N - \beta)$ is the
+distribution of a linear combination of $N$ random deviates with
+unknown distribution, 0 expected value and standard deviation equal to
+$\sigma_\epsilon / \hat{\sigma}_x$. Therefore, the first two moments
+$\sqrt{N}(\hat{\beta}_N - \beta)$ doesn't depend on $N$. As $N$ tends
+to infinity, the distribution of $\sqrt{N}(\hat{\beta}_N - \beta)$ is
+still 0 and its standard deviation is
+$\sigma_\epsilon/\hat{\sigma}_x$. The central-limit states that the
+distribution of $\sqrt{N}(\hat{\beta}_N - \beta)$ *converges in
+distribution to a normal distribution* as $N$ tends to infinity,
+whatever the distribution of $\epsilon$. This is denoted:
+
+$$
+\sqrt{N}(\hat{\beta}_N - \beta) \xrightarrow{d} \mathcal{N}\left(0, \frac{\sigma_\epsilon}{\hat{\sigma}_x}\right)
+$$
+
+Stated differently, the *asymptotic distribution* of $\hat{\beta}$ is
+a normal with parameters $\beta$ and standard deviation
+$\frac{\sigma_{\hat{\epsilon}}}{\sqrt{N} \hat{\sigma}_x}$:
+
+$$
+\hat{\beta}_N \stackrel{a}{\sim} \mathcal{N}\left(\beta, \frac{\sigma_\epsilon}{\sqrt{N}\hat{\sigma}_x}\right)
+$$
+
+
+
+
+To get an idea of the strength of the central-limit theorem, consider
+the simple case where we consider a simple average of $N$ independent random
+numbers with expected value equal to 0 and standard deviation equal
+to 1.
+
+$$
+\bar{x}_n = \frac{\sum_{n=1} x_n}{N}
+$$
+
+$\bar{x}_n$ has a 0 expected value and a variance equal to $1/N$. As
+we already now, $\bar{x}_n$ converges in probability to 0 and has
+therefore a degenerate distribution. Consider now:
+
+$$
+z_N = \sqrt{N} \bar{x}_n = \frac{\sum_{n=1} x_n}{\sqrt{N}}
+$$
+
+The expected value of $z_N$ is still 0, but its standard deviation is
+now 1. Consider the case of $N = 4$. The third moment of $z_n$ is:
+
+$$
+E(z_N^3) = \frac{\mbox{E}\left((\sum_{n=1}^N x_n) ^ 3\right)}{N^{3/2}}
+$$
+
+
+Take for example the case of $N=4$. We have:
+
+$$
+\left(\sum_{n=1}^3 x_n\right) ^ 3 =(x_1 ^ 2 + x_2 ^ 2 + x_3 ^ 2 + 2 x_1 x_2 +
+2x_1 x_3 + 2 x_2 x_3)(x_1 + x_2 + x_3)
+$$
+
+Taking the expecting value of this sum, we get terms like:
+
+- $\mbox{E}(x_n, x_m^2) = \mbox{E}(x_n)\mbox{V}(x_m^2)=0 \times 1 = 0$,
+- $\mbox{E}(x_n, x_m, x_l) = \mbox{E}(x_n)\mbox{E}(x_m)\mbox{E}(x_l)=
+  0 \times 0 \times 0 = 0$,
+- $\mbox{E}(x_n^3) = \mu_3$.
+
+Thefore, only the last kind of terms remain while taking the expected
+value of the sum, we have $N$ of them and the third moment of $z_N$ is
+therefore:
+
+$$
+E(z_N^3) = \frac{N \mu_3}{N^{3/2}}
+$$
+
+Therefore, as $N$ tends to infinity, $E(z_N^3)$ tends to 0, whatever
+the value of $\mu_3$, ie the coefficient of asymetry of $x$.
+
+
+Consider now the fourth moment:
+
+$$
+\begin{array}{rcl}
+\left(\sum_{n=1}^3 x_n\right) ^ 4 &=& 
+(x_1 ^ 2 + x_2 ^ 2 + x_3 ^ 2 + 2 x_1 x_2 + 2x_1 x_3 + 2 x_2 x_3) \\
+&\times&
+(x_1 ^ 2 + x_2 ^ 2 + x_3 ^ 2 + 2 x_1 x_2 + 2x_1 x_3 + 2 x_2 x_3)
+\end{array}
+$$
+
+
+- terms like $x_n x_m ^ 3$, $x_n x_m x_l ^ 2$ and $x_n x_m x_l x_p$
+  have zero expected values,
+- terms like $x_n ^ 2 x_m ^ 2$ have an expected value of $1 \times 1 =
+  1$ and there are, for $N=3$, 18 of them, or more generally $3 N (N -
+  1)$,
+- terms like $x_n ^ 3$ have an expected value of $\mu_4$ and there are
+  $N$ of them. 
+
+Therefore:
+
+$$
+E(z_N^4) = \frac{3N(N-1) + N \mu_4}{N^2} = 3 \frac{N-1}{N} + \frac{\mu_4}{N}
+$$
+
+which tends to 3, as $N$ tends to infinity. 
+
+Therefore, for "large" $N$, the distribution of $z_N$ doesn't depends
+on the shape parameters of $x_n$ ($\mu_3$ and $\mu_4$) and its 3rd and
+4th moments equal 0 and 3, which are the values of corresponding
+values for a normal distribution. These reasoning can easily extended
+to higher moments, the general conclusion is that, when $N$ tends to
+infinity, all the moments of $z_N$ tend to those of a normal
+distribution. The asymptotic distribution of $z_N$ is therefore normal
+and doesn't depend on the characteristics of the distribution of
+$x_N$. To illustrate this case, we'll consider errors that follow a
+standardized chi-squared distribution with one degree of
+freedom. Remind that a chi-squared with one degree of freedom is
+simply the square of a standard normal deviate: $x = z ^ 2$. We thus
+have $\mbox{E}(x) = \mbox{E}(z ^ 2) = \mbox{V}(z) = 1$ and:
+
+$$
+\mbox{V}(x) = \mbox{E}\left((x - 1) ^ 2\right)=
+\mbox{E}\left(z ^ 4\right) - 1 = 3 - 1 = 2
+$$
+
+Therefore, $v = \frac{x-1}{\sqrt{2}}$ has a zero expected value and a
+standard deviation equal to 1. One can show that its third and fourth
+centered moment are $2\sqrt{2}$ and $15$. Therfore, the distribution
+is:
+
+- highly asymetric, ie it has a long tail on the left side, and a
+  negative median, which is lower than the mean (equal to zero),
+- highly leptokurtic, whcih means that the fourth moment (15) is
+  highly larger than the value of 3 of the normal distribution; it has
+  therefore a mucher higher mode and higher tails than a normal
+  distribution.
+
+Now, going back to the `pricetime` data, we generate some sample using
+the following DGP:
+
+$$
+y_n = \alpha + \beta x_n + \epsilon_n
+$$
+
+with $\alpha = `r round(alpha, 1)`$, $\beta = `r round(beta, 3)`$ and:
+$\epsilon_n = \sigma_\epsilon \frac{z_n ^ 2 - 1}{\sqrt{2}}$, where 
+$\sigma_\epsilon = 0.08$ and $z_n$ is a random draw on a standard
+normal distribution
+
+```{r }
+set.seed(1)
+x <- pricetime %>% pull(h)
+N <- length(x)
+R <- 4
+smpls <- tibble(smpl = rep(1:R, each = N),
+                h = rep(x, R),
+                eps = seps * (rnorm(N * R) ^ 2 - 1) / sqrt(2),
+                sf = alpha + beta * h + eps)
+```
+
+
+```{r smpls4hbeta, echo = FALSE, fig.cap = "4 samples with $\\chi^2$ errors"}
+smpls %>% ggplot(aes(x = h, y = sf)) + geom_point() +
+    facet_wrap(~ smpl) +
+    geom_smooth(se = FALSE, method = "lm", linetype = "dashed", color = "black") +
+    geom_abline(intercept = alpha, slope = beta)
+```
+
+The sum of the residuals is still equal to zero, but we can see that
+the distribution of the errors (and therefore the distribution of the
+residuals) is highly asymetric (we have only a couple of positive values,
+some of them being very large). Now we generate a large number $R$ of samples
+and for each of them, we compute the slope estimator and we plot the
+empirical distribution of $\hat{\beta}$ using an
+histogram. We consider different sample sizes; we use the "repeated in fixed
+sample" hypothesis, ie we increase the size of the sample by
+duplicating the same values of $x$. The results are presented in the
+figure \@ref(fig:empdisthbeta).
+
+```{r empdisthbeta, echo = FALSE, fig.cap = "Empirical distribution of $\\hat{\\beta}$ for different sample sizes and adjustment by a normal density"}
+N <- 9
+x <- pricetime %>% pull(h)
+sx <- sqrt(mean((x - mean(x))^2))
+seps <- 0.08
+alpha <- -0.2
+beta <- 0.032
+R <- 1E04
+Ns <- N * c(1, 4, 11, 22)
+smpls <- lapply(Ns, function(N)
+    tibble(smpl = rep(1:R, each = N),
+           x = rep(x, R * N / 9),
+           eps = seps * (rnorm(R * N) ^ 2  - 1) / sqrt(2),
+           y = alpha + beta * x + eps) %>%
+    group_by(smpl) %>%
+    summarise(hbeta = sum( (y - mean(y)) * (x - mean(x))) /
+                  sum( (x - mean(x)) ^ 2),
+              theta = sqrt(N) * (hbeta - beta)) %>%
+    select(hbeta, theta)) %>%
+    Reduce(f = "cbind") %>%
+    set_names(as.character(t(outer(Ns, c("hbeta", "theta"), paste, sep = "_")))) %>%
+    as_tibble %>% mutate(id = 1:R) %>%
+    pivot_longer(1:8, names_to = c("size", "rnd"), names_sep = "_") %>%
+    pivot_wider(1:3, names_from = rnd, values_from = value) %>% 
+    mutate(size = factor(size, levels = Ns))
+xs <- seq(0.02, 0.045, 0.0001)
+datanorm <- tibble(x= rep(xs, 4),
+                   size = rep(Ns, each = length(xs)),
+                   dens = dnorm(x, mean = beta, sd = seps / sx / sqrt(size))) %>%
+    mutate(size = factor(size, levels = Ns))                   
+smpls %>% ggplot(aes(hbeta)) + geom_histogram(color = "black", fill = "white",
+                                              aes(y = ..density..),
+                                              breaks = seq(0.02, 0.045, 0.001)) +
+    geom_line(data = datanorm, aes(x = x, y = dens)) + 
+    facet_wrap(~ size)
+```
+
+We see that the distribution of $\hat{\beta}$ is centered on $\beta$,
+whatever the sample size, which illustrate the fact that the estimator
+is unbiased. As the sample size is growing, we can see two evolution
+of the histogram:
+
+- it is more and more concentrated around the mean value of $\alpha$,
+  which is due to the fact that the standard deviation of
+  $\hat{\alpha}$ is inversely proportional to sample size,
+- the adjustment by the normal density curve is very bad in small
+  samples; especially, the distribution of the estimator is highly
+  leptokurtic.
+
+Next, we plot the distribution of $\sqrt{N}(\hat{\beta}-\beta)$, which
+has constant mean and standard deviation (respectively 0 and
+$\sigma_\epsilon/\sigma_x$. Therefore, only the shape of the
+distribution changes when the sample size increase.
+
+```{r empdisttheta, echo = FALSE, fig.cap = "Empirical distribution of $\\sqrt{N}(\\hat{\\beta}-\\beta)$ for different sample sizes and adjustment by a normal density"}
+smpls %>% ggplot(aes(theta)) + geom_histogram(color = "black", fill = "white",
+                                              aes(y = ..density..),
+                                              breaks = seq(-0.03, 0.03, 0.0025)) +
+    facet_wrap(~ size) +
+    stat_function(fun = dnorm, args = list(mean = 0, sd = seps / sx), xlim = c(-0.03, 0.03))
+```
+
+We can there more precisely see the strength of the central limit
+theorem, even for errors which follows a distribution very different
+from the normal.
+
+
+## Confidence interval and tests
+
+We've seen that:
+
+$$
+\hat{\beta}_N \stackrel{a}{\sim} \mathcal{N}\left(\beta, \frac{\sigma_{\hat{\beta}}}{\sqrt{N}}\right)
+$$
+
+Or:
+
+
+$$
+\frac{\hat{\beta}_N-\beta}{\sigma_{\hat{\beta}_N}}=
+\frac{\sqrt{N}\hat{\sigma}_x}{\sigma_\epsilon}(\hat{\beta}_N-\beta)
+\stackrel{a}{\sim}
+\mathcal{N}(0, 1)
+$$
+
+### Hypothesis and confidence interval about the value of the slope
+
+We want the test the hypothesis that $\mbox{H}_0: \beta = \beta_0$,
+the alternative hypothesis being $\mbox{H}_1: \beta \neq
+\beta_0$. Denote $z_{\alpha/2}$ the critical value of a standard
+normal distribution at the $\alpha$% error level. This is given by:
+
+$$
+\mbox{P}(\mid z \mid > z_{\alpha/2}) = \alpha
+$$
+
+or:
+
+$$
+\mbox{P}(\mid z \mid \leq z_{\alpha/2}) = 1 - \alpha
+$$
+
+Take for example $\alpha = 5$%. To obtain the critical value, the
+`qnorm` function can be used, which takes as argument a
+probability. By default, it returns the value such that $\mbox{P}(z <
+x) = p$, but the value of $\mbox{P}(z > x) = p$ is returned if the
+`lower.tail` argument is set to `FALSE`:
+
+```{r collapse = TRUE}
+qnorm(0.025)
+qnorm(0.975)
+qnorm(0.025, lower.tail = FALSE)
+```
+
+In this case, the critical value is $1.96$, which means that, drawing
+on a standard normal distribution, one gets in average 95% of values
+lower, in absolute values, to 1.96. The preeceding commands indicate
+respectively that:
+
+- there are 2.5% of the values of a normal distribution that are below
+  -1.96,
+- there are 97.5% of the values of a normal distribution that are below
+  1.96,
+- there are 2.5% of the values of a normal distribution that are
+  greater that 1.96.
+
+The 5% critical value is presented in figure \@ref(fig:normal).
+
+
+```{r normal, echo = FALSE, fig.cap = "Normal distribution and 5 percent critical value"}
+dd <- tibble(x = seq(-3, 3, 0.01), y = dnorm(x))
+dd %>% ggplot(aes(x, y)) + geom_path() +
+    geom_ribbon(data = filter(dd, x >= 1.96), aes(ymin = 0, ymax = y), fill = "lightgray") +
+    geom_ribbon(data = filter(dd, x <= -1.96), aes(ymin = 0, ymax = y), fill = "lightgray") +
+    geom_text(data = tibble(x = c(-1.96, 0, 1.96), y = - 0.01, text = c("-1.96", "0", "+1.96")), aes(label = text)) +
+    geom_hline(yintercept = 0) + geom_vline(xintercept = 0, ylim = c(0, 0.5)) + 
+    theme_void()
+```
+
+If $\mbox{H}_0$ is true, we have
+$\frac{\hat{\beta}_N-\beta_0}{\sigma_{\hat{\beta}_N}}$ which is a draw
+in a standard normal distribution and wet herefore should have an
+absolute value lower than 1.96 95% of the time. Obviously,
+$\hat{\beta}$ will almost never be exactly equal to $\beta_0$, even if
+$\mbox{H}_0$ is true because of sampling error. We have therefore the
+following decision rule, say at the 95% confidence level:
+
+- if the absolute value of the computed statistic
+  $\frac{\hat{\beta}_N-\beta_0}{\sigma_{\hat{\beta}_N}}$ is greater
+  than the critical value, we'll say that the difference between
+  $\hat{\beta}$ and $\beta_0$ is too large to be caused by sampling
+  error, we therefore reject the hypothesis,
+- if the absolute value of the computed statistic
+  $\frac{\hat{\beta}_N-\beta_0}{\sigma_{\hat{\beta}_N}}$ is lower than
+  the critical value, we'll say that the difference between
+  $\hat{\beta}$ and $\beta_0$ is small enough to be caused by sampling
+  error, we therefore don't reject the hypothesis.
+  
+Consider as an example $\hat{\beta} = 3.46$, $\beta_0 = 4$ and
+$\sigma_\epsilon = 0.3$. The computed statistic is $\frac{3.46 -
+4}{0.3} = - 1.8$. 
+
+```{r collapse = TRUE}
+hbeta <- 3.46
+betao <- 4
+shbeta <- 0.3
+stat <- (hbeta - betao) / shbeta
+stat
+```
+
+It is lower, in absolute value, to $1.96$, we therefore don't reject
+the null hypothesis at the 5% error level.
+
+A more general tool is the *probability value*. It is the probability
+of drawing a value at least as large as the one we obtained (in
+absolute value) if the hypothesis is true. It is given by:
+
+$$
+p = 2 \left[1 -\Phi\left(\left| \frac{\hat{\beta}-\beta}{\sigma_\epsilon} \right|\right)\right]
+$$
+
+Probability critics are computed using the `pnorm` function, which
+compute the probability for a given value of its argument. The default
+behaviour of `pnorm` is to return $\mbox{P}(z < x)$, but the upper
+tail, given by $\mbox{P}(z > x)$ is returned by setting the
+`lower.tail` argument to `FALSE`.
+
+```{r collapse = TRUE}
+pnorm(stat)
+pnorm(abs(stat))
+1 - pnorm(abs(stat))
+pnorm(abs(stat), lower.tail = FALSE)
+2 * pnorm(abs(stat), lower.tail = FALSE)
+```
+
+The computed statistics can be of both signs, so the last formula is
+the most robust: first take the absolute value of the statistic, then
+compute the upper tail for a normal distribution, then multiply
+by 2. The p-value is greater than $5$%, therefore the hypothesis is
+not rejected at the 5%. The strength of the p-value is that, once it
+is computed, it is very easy to get the decision, whatever the error
+level (and even whatever the distribution).
+
+The 5-10% critical value and the p-value are represented in figure
+\@ref(fig:pvalue).
+
+```{r pvalue, echo = FALSE, fig.cap = "Critical value and p-value"}
+dx <- 0.02
+dd <- tibble(x = seq(-3, 3, 0.01), y = dnorm(x))
+dd %>% ggplot(aes(x, y)) + geom_path() +
+    geom_ribbon(data = filter(dd, x >= 1.645), aes(ymin = 0, ymax = y), fill = "grey50") +
+    geom_ribbon(data = filter(dd, x <= -1.645), aes(ymin = 0, ymax = y), fill = "grey50") +
+    geom_ribbon(data = filter(dd, x >= 1.8), aes(ymin = 0, ymax = y), fill = "grey70") +
+    geom_ribbon(data = filter(dd, x <= -1.8), aes(ymin = 0, ymax = y), fill = "grey70") +
+    geom_ribbon(data = filter(dd, x >= 1.96), aes(ymin = 0, ymax = y), fill = "grey90") +
+    geom_ribbon(data = filter(dd, x <= -1.96), aes(ymin = 0, ymax = y), fill = "grey90") +
+    geom_text(data = tibble(x = c(-1.96 - dx, -1.8 + dx, -1.645 + 3 * dx, 1.645 - 3 * dx, 1.8 - dx, 1.96 + dx), y = - 0.01,
+                            text = c("-1.96", "-1.80", "-1.64", "+1.64", "+1.80", "+1.96")),
+              aes(label = text), size = 3) +
+    geom_hline(yintercept = 0) + geom_vline(xintercept = 0) + 
+    theme_void()
+```
+
+The absolute value of the statistic is $1.80$, the critical values at
+the 5 and 10% are $1.96$ and $1.64$; 
+
+- the absolute value of the statistic being lower than the 5% critical
+value, the hypothesis is not rejected at the 5% level,
+- the absolute value of the statistic being greater than the 10% critical
+value, the hypothesis is rejected at the 10% level. 
+
+The p-value is equal to 7.2%:
+
+- the p-value is greater than 5%, the hypothesis is not rejected at
+  the 5% level,
+- the p-value is lower than 10%, the hypothesis is rejected at
+  the 10% level.
+
+To get a confidence interval, start with:
+
+$$
+\mbox{P}\left(\left|\frac{\hat{\beta}_N -
+\beta}{\sigma_{\hat{\beta}}}\right|<z_{\alpha/2}\right) = 1 - \alpha
+$$
+
+Developping this expression, we get:
+
+$$
+\hat{\beta} - \sigma_{\hat{\beta}} z_{\alpha/2} < \beta < \hat{\beta} + \sigma_{\hat{\beta}} z_{\alpha/2}
+$$
+
+which gives, in our example:
+
+```{r }
+round(hbeta + c(-1, 1) * 1.96 * shbeta, 3)
+```
+
+In real settings,
+$\sigma_{\hat{\beta}}=\frac{\sigma_\epsilon}{\sqrt{N}\hat{\sigma}_x}$
+is unkown. $\sigma_{\hat{\beta}}$ can there be replaced by:
+
+$$
+\hat{\sigma}_{\hat{\beta}} = \frac{\dot{\sigma}_\epsilon}{\sqrt{N}\hat{\sigma}_x}
+$$
+
+where $\dot{\sigma}_\epsilon$ is the unbiased estimator of the
+standard deviation of the error. In this case, the distribution is no
+more a normal, but a Student t with $N-2$ degrees of freedom:
+
+$$
+\frac{\hat{\beta}_N-\beta}{\dot{\sigma}_{\hat{\beta}_N}}=
+\frac{\sqrt{N}\hat{\sigma}_x}{\dot{\sigma}_\epsilon}(\hat{\beta}_N-\beta)
+\sim t_{N-2}
+$$
+
+The Student distribution has a 0 expected value and a variance equal
+to $\frac{N - 2}{N -4}$, which tends to 1 for large $N$. Moreover, the
+Student distribution converge in distribution to a normal
+distribution. Therefore, for large $N$, the same inference as the one
+presented for known $\sigma_\epsilon$ can be applied, using the normal
+distribution as a good approximation. For small samples however,
+critical values of the Student distribution should be used. The
+relevant 95% critical values are computed below for numbers of degrees
+of freedom equal to 5, 10, 50, 100 and 1000:
+
+
+```{r }
+qt(0.975, df = c(5, 10, 50, 100, 1000), lower.tail = FALSE) %>% round(3)
+```
+
+We go back to the estimation of the price-time model:
+
+```{r }
+pxt
+```
+Detailed results of the model are computed using the `summary`
+function:
+
+
+```{r }
+spxt <- summary(pxt)
+```
+
+The result is an object with further details about the linear model
+and can be printed to get detailed results of the estimation:
+
+```{r }
+summary(pxt)
+```
+The `coef` method applied to the summary gives a four columns table of
+the coefficients, 
+
+```{r }
+coef(summary(pxt))
+```
+
+with the estimation on the first column and the standard deviation on
+the second one. The third one contains the ratio of the estimation and
+its standard deviation, which is the special case of the test
+statistic $\frac{\hat{\beta}-\beta_0}{\dot{\sigma}_{\hat{\beta}}}$ where
+$\beta_0=0$. Finally, the last coulumn contains the probability value.
+
+As we have a very small sample, it is worth considering the critical
+value for a Student instead of a normal distribution. We get here:
+
+```{r }
+cv <- qt(0.025, df = df.residual(pxt), lower.tail = FALSE)
+cv
+```
+- for the intercept, the t statistic is much lower than the critical
+value and the probability value is far greater than 5%, therefore, the
+hypothesis than $\alpha = 0$ is not rejected,
+- for the slope, the t statistic is much higher than the critical
+value and the probability value is far lower than 5%, therefore, the
+hypothesis than $\beta = 0$ is not rejected,
+
+The `coeftest` function from the `lmtest` package gives the same result:
+
+```{r }
+lmtest::coeftest(pxt)
+```
+The advantage of this latter function is that a customized function
+can be provided to compute the standard deviation. For example, to get
+the heteroskedastic consistent estimator of the standard deviations, we use:
+
+```{r }
+lmtest::coeftest(pxt, vcov = function(x) vcovHC(x, type = "HC1"))
+```
+
+The `confint` function computes the confidence interval for the
+coefficients:
+
+
+```{r }
+confint(pxt)
+```
+
+which indicate, for example, that there are 95% of chance than the
+true value of the slope is between `r round(confint(pxt)[2, 1], 3)`
+and `r round(confint(pxt)[2, 2], 3)`.
+
+Note that the structural parameters of the model are not $\alpha$ and
+$\beta$, but $a$ and $b$, which are the lower and the higher values of
+the travel time.
+
+### The Delta method
+
+It's often the case that the parameters of interest are not the fitted
+parameters, but some functions of them. In the price-time model, the
+fitted parameters are $\alpha$ and $\beta$, but the structural
+parameters, which are the lower and higher values of the travel time
+$a$ and $b$:
+
+$$
+\left\{
+\begin{array}{rcl}
+a &=& F^a(\alpha, \beta) = -\frac{\alpha}{\beta} \\
+b &=& F^b(\alpha, \beta) = \frac{1 - \alpha}{\beta}
+\end{array}
+\right.
+$$
+
+We use a first order Taylor extension for $f^a$ and $f^b$:
+
+$$
+\left\{
+\begin{array}{rcl}
+a &=& F^a(\alpha_0, \beta_0) + 
+(\alpha - \alpha_0) f^a_\alpha(\alpha_0, \beta_0) + 
+(\beta - \beta_0) f^a_\beta(\alpha_0, \beta_0)\\
+b &=& F^b(\alpha_0, \beta_0) + 
+(\alpha - \alpha_0) f^b_\alpha(\alpha_0, \beta_0) + 
+(\beta - \beta_0) f^b_\beta(\alpha_0, \beta_0)\\
+\end{array}
+\right.
+$$
+
+So that the variance is:
+
+$$
+\left\{
+\begin{array}{rcl}
+  \hat{\sigma}_{\hat{a}} ^ 2 &=&
+  f^a_\alpha(\alpha_0, \beta_0) ^ 2  \hat{\sigma}_{\hat{\alpha}} ^ 2 + 
+  f^a_\beta(\alpha_0, \beta_0) ^ 2  \hat{\sigma}_{\hat{\beta}} ^ 2 + 
+  2 f^a_\alpha(\alpha_0, \beta_0)f^a_\beta(\alpha_0, \beta_0)
+  \hat{\sigma}_{\hat{\alpha}\hat{\beta}} \\
+  \hat{\sigma}_{\hat{b}} ^ 2 &= &
+  f^b_\alpha(\alpha_0, \beta_0) ^ 2  \hat{\sigma}_{\hat{\alpha}} ^ 2 + 
+  f^b_\beta(\alpha_0, \beta_0) ^ 2  \hat{\sigma}_{\hat{\beta}} ^ 2 + 
+  2 f^b_\alpha(\alpha_0, \beta_0)f^b_\beta(\alpha_0, \beta_0)
+  \hat{\sigma}_{\hat{\alpha}\hat{\beta}} \\
+\end{array}
+\right.
+$$
+
+Simplifying and replacing ($\alpha, \beta$) by
+($\hat{\alpha}, \hat{\beta}$):
+
+$$
+\left\{
+  \begin{array}{rcl}
+\hat{\sigma}_{\hat{a}} &=&
+\frac{\dot{\sigma}_\epsilon}{\sqrt{N}\hat{\sigma}_x}\frac{1}{\hat{\beta}}
+  \sqrt{\hat{\sigma}_x ^ 2 + \left(\bar{x} +
+                           \frac{\hat{\alpha}}{\hat{\beta}}\right) ^ 2} \\
+\hat{\sigma}_{\hat{b}} &=&
+\frac{\dot{\sigma}_\epsilon}{\sqrt{N}\hat{\sigma}_x}\frac{1}{\hat{\beta}}
+  \sqrt{\hat{\sigma}_x ^ 2 + \left(\bar{x} - 
+                           \frac{1 - \hat{\alpha}}{\hat{\beta}}\right) ^ 2}
+  \end{array}
+\right.
+$$
+
+```{r }
+bx <- mean(x)
+sx <- sqrt(mean( (x - bx) ^ 2))
+halpha <- coef(pxt)[1]
+hbeta <- coef(pxt)[2]
+hseps <- sigma(pxt)
+ab <- c(- halpha / hbeta, (1 - halpha) / hbeta)
+sab <- hseps / sx / sqrt(nobs(pxt)) / hbeta *
+    sqrt(c(sx ^ 2 + (bx + halpha / hbeta) ^ 2,
+           sx ^ 2 + (bx - (1 - halpha) / hbeta) ^ 2)
+         )
+ab
+sab
+```
+
+which finally leads to the 95% confidence interval:
+
+```{r }
+matrix(ab, 2, 2) + matrix(c(- sab, sab), 2) * cv
+```
+
+
+### Confidence interval for the prediction
+
+
+We seek to predict the conditional mean of $y$ for $x = x_n$, which
+is:
+
+$$
+\mbox{E}(y \mid x = x_n) = \alpha + \beta x_n + \mbox{E}(\epsilon \mid
+x = x_n) = \alpha + \beta x_n
+$$
+
+As $\hat{\alpha}$ and $\hat{\beta}$ are unbiased estimators of
+$\alpha$ and $\beta$, $\hat{y}_n = \hat{\alpha} + \hat{\beta} x_n$ is
+an unbiased estimator of $\mbox{E}(y \mid x = x_n)$. To compute its
+variance, remind that the variances and the covariances of
+$(\hat{\alpha}, \hat{\beta})$ are:
+
+$$
+\left(
+\begin{array}{cc}
+\sigma_{\hat{\alpha}} ^ 2 & \sigma_{\hat{\alpha}\hat{\beta}} \\
+\sigma_{\hat{\alpha}\hat{\beta}} & \sigma_{\hat{\beta}} ^ 2
+\end{array}
+\right)
+=
+\frac{\sigma_\epsilon ^ 2}{N\hat{\sigma}_x ^ 2}
+\left(
+\begin{array}{cc}
+\bar{x} ^ 2 + \hat{\sigma}_x ^ 2 & - \bar{x} \\
+-\bar{x} & 1
+\end{array}
+\right)
+$$
+
+Applying the formula for the variance of a sum, we get:
+
+$$
+\begin{array}{rcl}
+\sigma_{\hat{y}_n} ^ 2 &=& \sigma_{\hat{\alpha}} ^ 2 + 
+x_n ^ 2 \sigma_{\hat{\beta}} ^ 2  + 2 x_n
+\sigma_{\hat{\alpha}\hat{\beta}} \\
+&=& \frac{\sigma_\epsilon ^ 2}{N \sigma_x ^ 2}
+\left( (\sigma_x ^ 2 + \bar{x} ^ 2) + x_n ^ 2 - 2 \bar{x} x_n\right) \\
+&=& \frac{\sigma_\epsilon ^ 2}{N \sigma_x ^ 2}
+\left( \sigma_x ^ 2 + (x_n - \bar{x}) ^ 2\right)
+\end{array}
+$$
+
+wich finally leads to the formula of the standard deviation of the
+predictions:
+
+$$
+\sigma_{\hat{y}_n} = \sigma_\epsilon
+\sqrt{\frac{1}{N} + \frac{1}{N} \frac{(x_n - \bar{x}) ^ 2}{\hat{\sigma}_x ^ 2}}
+$$
+
+It increases with the deviation of $x_n$ from the sample
+mean. Moreover, $\hat{y}_n$ is a consistent estimator of $\mbox{E}(y
+\mid x = x_n)$, as the variance tends to 0 when $N$ tends to
+infinity.
+
+The 95% confidence interval is obtained by adding and substracting
+from the point estimator the estimated standard deviation times the
+critical value (here a Student $t$ with $N-2=7$ degrees of freedom.
+
+```{r }
+Mux <- mean(pricetime$h)
+N <- nobs(pxt)
+sx2 <- sum( (pricetime$h - Mux) ^ 2) / N
+tcv <- qt(0.975, df = df.residual(pxt))
+pricetime <- pricetime %>%
+    mutate(fitted = fitted(pxt),
+           sefitted = sigma(pxt) / sqrt(N) * sqrt( 1 + (pricetime$h - Mux) ^ 2 / sx2),
+           low = fitted - tcv * sefitted,
+           up = fitted + tcv * sefitted)
+pricetime %>% select(fitted, low, up) %>% head(3)
+```
+These values can also be obtained with the `predict` function, with
+the `interval` argument set to `"confidence"`:
+
+```{r }
+predict(pxt, interval = "confidence") %>% round(3) %>% head(3)
+```
+
+```{r errorbar, fig.cap = "Error bars"}
+pricetime %>% ggplot(aes(h, sf)) + geom_point() + geom_smooth(method = "lm") +
+    geom_errorbar(aes(ymin = low, ymax = up))
+```
+
+On figure \@ref(fig:errorbar), we use `geom_smooth` with the default
+`TRUE` value for the `se` argument; in this case, we have a grey zone
+which figure the confidence interval (by default at the
+95%). `geom_errorbar` draws vertical segments, which represent here
+the limits of the confidence interval we have computed. 
+
+Note that it is a **confidence interval** for $\mbox{E}(y \mid x =
+x_n)$, which is due to the fact that $\hat{\alpha}$ et $\hat{\beta}$
+are estimators of $\alpha$ and $\beta$ and measure therefore $\alpha$ and
+$\beta$ with some random error.
+
+The **prediction interval** is the confidence interval for a value of
+$y$ for a given value of $x$. It is larger as, to the variance of the
+estimated conditial mean, we have to add the variance of the error:
+$\sigma_\epsilon^2$. The standard deviation therefore becomes:
+
+$$
+\sigma_{y_n} = \sqrt{\sigma_{\hat{y}_n} ^ 2 + \sigma_{\epsilon} ^ 2}=
+\frac{\sigma_{\epsilon}}{\sqrt{N}}
+\sqrt{1 + N + \frac{(x_n - \bar{x}) ^ 2}{\hat{\sigma}_x ^ 2}}
+$$
+
+```{r }
+pricetime <- pricetime %>%
+    mutate(fitted = fitted(pxt),
+           sefitted = sigma(pxt) / sqrt(N) * sqrt( 1 + N + (pricetime$h - Mux) ^ 2 / sx2),
+           low = fitted - tcv * sefitted,
+           up = fitted + tcv * sefitted)
+pricetime %>% select(fitted, low, up) %>% head(3)
+```
+
+This prediction interval can also be obtained with the `predict`
+function, with the `interval` argument set to `prediction`:
+
+```{r }
+predict(pxt, interval = "prediction") %>% round(3) %>% head(3)
+```
+On figure \@ref(fig:confpredit) the two intervals are represented,
+the **confidence interval** by the grey zone drawn by `geom_smooth` and
+the **prediction interval** by the error bars.
+verticales :
+
+```{r confpredit, fig.cap = "Confidence and prediction intervals"}
+pricetime %>% ggplot(aes(h, sf)) + geom_point() + geom_smooth(method = "lm") +
+    geom_errorbar(aes(ymin = low, ymax = up))
+```
+
+As an example, consider travels from Bordeaux to Paris. Reported
+transport time is 242 minutes, which is approximatively 4 hours. The
+high speed track, opened in 2018 reduce this transport time to 3
+hours, which means a reduction of 60 hours and the price increased to
+75 euros. Assuming than nothing changed on the plane side, what
+prediction can we make about the change of the model share of rail?
+
+```{r }
+initial <- filter(pricetime, ville == "Bordeaux") %>% select(ville, pf, pa, tf, ta)
+bordeaux <- add_row(initial, ville = "BordeauxSim",
+                    pf = 75, pa = 82.6, tf = 180, ta = 165) %>%
+    mutate(h = (pa - pf) / ( (tf - ta) / 60))
+```
+The prediction of train's modal share is obtained using the `predict`
+function with the `new` argument which is a data frame containing the
+values of the covariates for which we want to compute predictions
+(this is the `bordeaux` table in our example):
+
+```{r }
+prd <- predict(pxt, new = bordeaux, interval = "prediction") %>% as_tibble
+prd
+bordeaux <- bind_cols(bordeaux, prd)
+```
+Present and predicted market shares are represented in red on figure
+\@ref(fig:bordeaux), along with the confidence interval.
+
+```{r bordeaux, echo = FALSE, fig.cap = "Predictions for train's model share"}
+pricetime %>% ggplot(aes(h, sf)) + geom_point() +
+    geom_smooth(se = FALSE, method = "lm", fullrange = TRUE) +
+    geom_point(data = bordeaux, col = "red", aes(y = fit)) + 
+    geom_errorbar(data = bordeaux, aes(ymin = lwr, ymax = upr, y = NULL))
+```
+
